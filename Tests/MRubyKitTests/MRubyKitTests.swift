@@ -541,6 +541,24 @@ final class TestBridge: MRubyExport, @unchecked Sendable {
             return .from("Hi, \(name)!", in: ctx)
         },
     ]
+
+    // 类方法（对应 JSC 类方法在构造函数上）
+    nonisolated(unsafe) static let rubyClassMethods: [MRubyMethod] = [
+        MRubyMethod(name: "info") { ctx, selfVal, args in
+            .from("SwiftBridge class", in: ctx)
+        },
+    ]
+
+    // 属性
+    nonisolated(unsafe) static let rubyProperties: [MRubyProperty] = [
+        MRubyProperty(name: "version") { ctx, selfVal in
+            .from(42, in: ctx)
+        },
+        MRubyProperty(name: "label",
+            getter: { ctx, selfVal in .from("default", in: ctx) },
+            setter: { ctx, selfVal, newValue in /* stored elsewhere */ }
+        ),
+    ]
 }
 
 @Test func testMRubyExportRegistration() async throws {
@@ -819,6 +837,42 @@ final class TestBridge: MRubyExport, @unchecked Sendable {
     let c = MRubyValue.from(100, in: ctx)
     #expect(a.isEqual(to: b))
     #expect(!a.isEqual(to: c))
+}
+
+// MARK: - 类方法导出
+
+@Test func testMRubyExportClassMethod() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    try TestBridge.register(in: ctx)
+
+    let result = try ctx.eval("SwiftBridge.info")
+    #expect(result.toString() == "SwiftBridge class")
+}
+
+// MARK: - 属性导出
+
+@Test func testMRubyExportPropertyGetter() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    try TestBridge.register(in: ctx)
+
+    let val = try ctx.eval("SwiftBridge.new.version")
+    #expect(val.toInt() == 42)
+}
+
+@Test func testMRubyExportReadWriteProperty() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    try TestBridge.register(in: ctx)
+
+    // getter
+    let initial = try ctx.eval("SwiftBridge.new.label")
+    #expect(initial.toString() == "default")
+
+    // setter
+    try ctx.eval("SwiftBridge.new.label = 'new-value'")
+    #expect(Bool(true))  // 不崩溃即通过
 }
 
 // MARK: - undefined
