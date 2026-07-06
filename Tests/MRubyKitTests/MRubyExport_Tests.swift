@@ -3,8 +3,8 @@ import Testing
 
 // 测试用的导出类
 final class TestBridge: MRubyExport, @unchecked Sendable {
-    nonisolated(unsafe) static let rubyClassName = "SwiftBridge"
-    nonisolated(unsafe) static let rubyMethods: [MRubyMethod] = [
+    static let rubyClassName = "SwiftBridge"
+    static let rubyMethods: [MRubyMethod] = [
         MRubyMethod(name: "hello") { ctx, selfVal, args in
             .from("Hello from Swift!", in: ctx)
         },
@@ -17,12 +17,12 @@ final class TestBridge: MRubyExport, @unchecked Sendable {
             return .from("Hi, \(name)!", in: ctx)
         },
     ]
-    nonisolated(unsafe) static let rubyClassMethods: [MRubyMethod] = [
+    static let rubyClassMethods: [MRubyMethod] = [
         MRubyMethod(name: "info") { ctx, selfVal, args in
             .from("SwiftBridge class", in: ctx)
         },
     ]
-    nonisolated(unsafe) static let rubyProperties: [MRubyProperty] = [
+    static let rubyProperties: [MRubyProperty] = [
         MRubyProperty(name: "version") { ctx, selfVal in
             .from(42, in: ctx)
         },

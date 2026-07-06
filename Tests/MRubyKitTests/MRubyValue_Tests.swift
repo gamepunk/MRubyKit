@@ -455,5 +455,13 @@ import Testing
 
 @Test func testPropertyAttribute() async throws {
     let readOnly = MRubyValue.MRubyPropertyAttribute.readOnly
+    let dontEnum = MRubyValue.MRubyPropertyAttribute.dontEnum
+    let dontDelete = MRubyValue.MRubyPropertyAttribute.dontDelete
+    let combined: MRubyValue.MRubyPropertyAttribute = [.readOnly, .dontEnum]
     #expect(readOnly.rawValue == 1)
+    #expect(dontEnum.rawValue == 2)
+    #expect(dontDelete.rawValue == 4)
+    #expect(combined.contains(.readOnly))
+    #expect(combined.contains(.dontEnum))
+    #expect(!combined.contains(.dontDelete))
 }

@@ -554,13 +554,11 @@ public struct MRubyValue: @unchecked Sendable {
         public let rawValue: UInt32
         public init(rawValue: UInt32) { self.rawValue = rawValue }
 
-        /// 属性不可读或不可写。
-        public static let none          = MRubyPropertyAttribute(rawValue: 0)
-        /// 属性可读。
+        /// 属性只读（不可写）。
         public static let readOnly      = MRubyPropertyAttribute(rawValue: 1 << 0)
-        /// 属性在枚举中不显示。
+        /// 属性不可枚举（在 `for...in` 中不显示）。
         public static let dontEnum      = MRubyPropertyAttribute(rawValue: 1 << 1)
-        /// 属性不可配置（不能删除）。
+        /// 属性不可配置（不能删除或修改描述符）。
         public static let dontDelete    = MRubyPropertyAttribute(rawValue: 1 << 2)
     }
 
@@ -597,12 +595,12 @@ public struct MRubyValue: @unchecked Sendable {
     public func defineProperty(_ name: String, descriptor: [String: Any] = [:]) {
         guard isClass || isModule else { return }
 
-        if let getter = descriptor["get"] as? String {
-            if let setter = descriptor["set"] as? String {
-                let code = "define_method(:\(name)) { @\(name) }; define_method(:\(setter)) { |v| @\(name) = v }"
+        if let getterName = descriptor["get"] as? String {
+            if let setterName = descriptor["set"] as? String {
+                let code = "define_method(:\(getterName)) { @\(name) }; define_method(:\(setterName)) { |v| @\(name) = v }"
                 _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
             } else {
-                let code = "define_method(:\(name)) { @\(name) }"
+                let code = "define_method(:\(getterName)) { @\(name) }"
                 _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
             }
         } else if descriptor["value"] != nil {
