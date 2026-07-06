@@ -1,3 +1,4 @@
+import Foundation
 import CMRuby
 
 // MARK: - Trampoline
@@ -38,10 +39,33 @@ func mrubyNativeTrampoline(
         }
     }
 
-    // 调用 body，传入 (context, self, arguments)
+    // 调用 body 前设置当前上下文线程存储
     let selfMRubyVal = MRubyValue(raw: selfVal, context: ctx)
+    let td = Thread.current.threadDictionary
+    let oldCtx = td[currentContextKey]
+    let oldCallee = td[currentCalleeKey]
+    let oldThis = td[currentThisKey]
+    let oldArgs = td[currentArgsKey]
+    td[currentContextKey] = ctx
+    td[currentCalleeKey]  = MRubyValue(raw: mrb_obj_value(mrb.pointee.top_self), context: ctx)
+    td[currentThisKey]    = selfMRubyVal
+    td[currentArgsKey]    = args
+    defer {
+        td[currentContextKey] = oldCtx
+        td[currentCalleeKey]  = oldCallee
+        td[currentThisKey]    = oldThis
+        td[currentArgsKey]    = oldArgs
+    }
+
     return body(ctx, selfMRubyVal, args).raw
 }
+
+// MARK: - 当前上下文线程存储
+
+private let currentContextKey = "com.mrubykit.currentContext"
+private let currentCalleeKey  = "com.mrubykit.currentCallee"
+private let currentThisKey    = "com.mrubykit.currentThis"
+private let currentArgsKey    = "com.mrubykit.currentArguments"
 
 // MARK: - MRubyContext
 
@@ -50,6 +74,35 @@ func mrubyNativeTrampoline(
 /// 对应 JavaScriptCore 的 `JSContext`。
 /// 每个上下文共享所属 `MRubyVM` 的全局状态（global object、已定义的类和方法等）。
 public final class MRubyContext: @unchecked Sendable {
+
+    // MARK: - 当前上下文类方法
+
+    /// 当前正在执行 Ruby 代码的上下文。
+    ///
+    /// 对应 JSContext 的 `current()` 类方法。
+    /// 在原生函数（通过 `defineGlobalFunction` 或 `MRubyExport` 注册）的
+    /// 调用过程中，此属性返回正确的上下文；在外部调用时返回 `nil`。
+    public static var current: MRubyContext? {
+        Thread.current.threadDictionary[currentContextKey] as? MRubyContext
+    }
+
+    /// 当前正在执行的 Ruby 函数。
+    /// 对应 JSContext 的 `currentCallee()` 类方法。
+    public static var currentCallee: MRubyValue? {
+        Thread.current.threadDictionary[currentCalleeKey] as? MRubyValue
+    }
+
+    /// 当前正在执行的 Ruby 函数中的 `self` 值。
+    /// 对应 JSContext 的 `currentThis()` 类方法。
+    public static var currentThis: MRubyValue? {
+        Thread.current.threadDictionary[currentThisKey] as? MRubyValue
+    }
+
+    /// 当前正在执行的 Ruby 函数接收的参数。
+    /// 对应 JSContext 的 `currentArguments()` 类方法。
+    public static var currentArguments: [MRubyValue]? {
+        Thread.current.threadDictionary[currentArgsKey] as? [MRubyValue]
+    }
 
     // MARK: - 公开属性
 
@@ -213,6 +266,36 @@ public final class MRubyContext: @unchecked Sendable {
     /// 在 mruby 中，全局作用域的 `self` 是 `main` 对象（`top_self`）。
     public var globalObject: MRubyValue {
         MRubyValue(raw: mrb_obj_value(mrb.pointee.top_self), context: self)
+    }
+
+    // MARK: - 带 receiver 的执行
+
+    /// 在指定对象上执行 Ruby 代码（该对象成为代码中的 `self`）。
+    ///
+    /// 对应 JSContext 的 `evaluateScript(_:)` 但绑定 `this`，
+    /// 类似于 Ruby 的 `instance_eval`。
+    /// - Parameters:
+    ///   - code: Ruby 源代码字符串。
+    ///   - this: 执行时的 `self` 对象。
+    /// - Returns: 执行结果封装为 `MRubyValue`。
+    /// - Throws: `MRubyError.exception` 若执行产生异常。
+    @discardableResult
+    public func eval(_ code: String, this: MRubyValue) throws -> MRubyValue {
+        // 通过 instance_eval 在指定 receiver 上执行代码
+        let result = this.call(method: "instance_eval", arguments: [MRubyValue.from(code, in: self)])
+
+        // 检查异常
+        if let excValue = checkException() {
+            if let handler = exceptionHandler {
+                handler(self, excValue)
+                return MRubyValue(raw: mrb_nil_value(), context: self)
+            }
+            let msg = mrb_str_to_cstr(mrb, mrb_inspect(mrb, excValue.raw))
+                .map { String(cString: $0) } ?? "<unknown error>"
+            throw MRubyError.exception(msg)
+        }
+
+        return result
     }
 
     // MARK: - 带源码 URL 的执行

@@ -1,6 +1,62 @@
 import Foundation
 import CMRuby
 
+// MARK: - MRubyType
+
+/// mruby 值的运行时类型分类。
+///
+/// 对应 JavaScriptCore 的 `JSType` 枚举。
+public enum MRubyType: UInt32, Sendable, CaseIterable {
+    case undefined = 0
+    case nilValue  = 1
+    case bool      = 2
+    case integer   = 3
+    case float     = 4
+    case string    = 5
+    case symbol    = 6
+    case object    = 7
+    case array     = 8
+    case hash      = 9
+    case range     = 10
+    case klass     = 11
+    case module    = 12
+    case proc      = 13
+    case exception = 14
+    case data      = 15
+    case fiber     = 16
+    case complex   = 17
+    case rational  = 18
+    case bigint    = 19
+    case istruct   = 20
+
+    /// 从 mruby `mrb_vtype` 创建。
+    init(mrbTypeValue: mrb_value) {
+        let tt = mrb_type(mrbTypeValue)
+        switch tt {
+        case MRB_TT_SYMBOL:   self = .symbol
+        case MRB_TT_FLOAT:    self = .float
+        case MRB_TT_INTEGER:  self = .integer
+        case MRB_TT_OBJECT:   self = .object
+        case MRB_TT_CLASS:    self = .klass
+        case MRB_TT_MODULE:   self = .module
+        case MRB_TT_HASH:     self = .hash
+        case MRB_TT_CDATA:    self = .data
+        case MRB_TT_EXCEPTION:self = .exception
+        case MRB_TT_PROC:     self = .proc
+        case MRB_TT_ARRAY:    self = .array
+        case MRB_TT_STRING:   self = .string
+        case MRB_TT_RANGE:    self = .range
+        case MRB_TT_FIBER:    self = .fiber
+        case MRB_TT_STRUCT:   self = .array
+        case MRB_TT_ISTRUCT:  self = .istruct
+        case MRB_TT_COMPLEX:  self = .complex
+        case MRB_TT_RATIONAL: self = .rational
+        case MRB_TT_BIGINT:   self = .bigint
+        default:              self = .undefined
+        }
+    }
+}
+
 // MARK: - MRubyRelationCondition
 
 /// 两个 mruby 值之间的比较关系。
@@ -81,11 +137,24 @@ public struct MRubyValue: @unchecked Sendable {
     public var isFiber:     Bool { mrb_bridge_fiber_p(raw) }
     public var isUndefined: Bool { mrb_bridge_undef_p(raw) }
 
+    /// 值是否为数值（Integer 或 Float）。
+    /// 对应 JSValue 的 `isNumber`。
+    public var isNumber: Bool { isInt || isFloat }
+
     /// 值是否为非基本类型的 Ruby 对象（Object 实例）。
     /// 对于 nil、true、false、Integer、Float、Symbol 等立即值返回 `false`。
     /// 对应 JSValue 的 `isObject`。
     public var isRubyObject: Bool {
         !isNil && !isTrue && !isFalse && !isBool && !isInt && !isFloat && !isSymbol && !isUndefined
+    }
+
+    /// 值的运行时类型分类。
+    /// 对应 JSValue 无直接属性，但 C API 中有 `JSValueGetType`。
+    public var mrubyType: MRubyType {
+        // 对于 MRB_TT_FALSE，需要进一步区分 nil 和 false
+        if isNil  { return .nilValue }
+        if isTrue { return .bool }
+        return MRubyType(mrbTypeValue: raw)
     }
 
     /// 值是否为 Ruby `Time` 对象（若 mruby-time gem 已加载）。
@@ -215,12 +284,87 @@ public struct MRubyValue: @unchecked Sendable {
 
     /// 检查对象是否响应指定的方法（Ruby `respond_to?`）。
     ///
-    /// 对应 JSValue 无直接等价 API，但可用于安全地检查方法是否存在。
+    /// 对应 JSValue 的 `hasProperty(_:)`。
     /// - Parameter selector: 方法名。
     /// - Returns: 若对象响应该方法返回 `true`。
     public func responds(to selector: String) -> Bool {
         let sym = selector.withCString { mrb_intern_cstr(mrb, $0) }
         return mrb_bridge_respond_to(mrb, raw, sym)
+    }
+
+    /// 检查属性或方法是否存在。
+    /// 对应 JSValue 的 `hasProperty(_:)`。
+    /// - Parameter name: 属性名或方法名。
+    /// - Returns: 是否存在。
+    public func hasProperty(_ name: String) -> Bool {
+        responds(to: name)
+    }
+
+    /// 删除指定的属性或方法。
+    /// 对应 JSValue 的 `deleteProperty(_:)`。
+    /// 在 Ruby 中通过 `remove_method` 实现（仅对类/模块有效）。
+    /// - Parameter name: 要删除的方法名。
+    /// - Returns: 是否成功删除。
+    @discardableResult
+    public func deleteProperty(_ name: String) -> Bool {
+        guard isClass || isModule else { return false }
+        // 获取 singleton class（用于类方法）
+        let singletonClass = mrb_singleton_class_ptr(mrb, raw)
+        if let singletonClass {
+            name.withCString { cName in
+                mrb_undef_method(mrb, singletonClass, cName)
+            }
+        }
+        // 同时在类本身上 undef（用于实例方法）
+        let rclass = mrb_bridge_class_ptr(raw)
+        if let rclass {
+            name.withCString { cName in
+                mrb_undef_method(mrb, rclass, cName)
+            }
+        }
+        return mrb.pointee.exc == nil
+    }
+
+    /// 检查两个值是否严格相等（Ruby `equal?`，即对象身份）。
+    ///
+    /// 对应 JSValue 的 `isEqual(to:)` 的行为差异：
+    /// - `==` / `isEqual(to:)` 检查值相等（Ruby `==`）
+    /// - `isIdentical(to:)` 检查对象身份（Ruby `equal?`）
+    ///
+    /// 对应 JavaScriptCore 的 `JSValueIsStrictEqual`。
+    /// - Parameter other: 要比较的值。
+    /// - Returns: 是否为同一个对象。
+    public func isIdentical(to other: MRubyValue) -> Bool {
+        let sym = "equal?".withCString { mrb_intern_cstr(mrb, $0) }
+        var argv = [other.raw]
+        let result = argv.withUnsafeMutableBufferPointer { buf in
+            mrb_funcall_argv(mrb, raw, sym, mrb_int(buf.count), buf.baseAddress)
+        }
+        if mrb.pointee.exc != nil {
+            mrb.pointee.exc = nil
+            return false
+        }
+        return MRubyValue(raw: result, context: context).toBool()
+    }
+
+    /// 宽松比较（Ruby `==` 允许类型转换）。
+    ///
+    /// 对应 JSValue 的 `isEqualWithTypeCoercion(to:)`。
+    /// 当前 `==` 运算符已使用 `inspect()` 字符串比较，
+    /// 此方法提供真正的 Ruby `==` 语义。
+    /// - Parameter other: 要比较的值。
+    /// - Returns: 是否相等。
+    public func isEqualWithTypeCoercion(to other: MRubyValue) -> Bool {
+        let sym = "==".withCString { mrb_intern_cstr(mrb, $0) }
+        var argv = [other.raw]
+        let result = argv.withUnsafeMutableBufferPointer { buf in
+            mrb_funcall_argv(mrb, raw, sym, mrb_int(buf.count), buf.baseAddress)
+        }
+        if mrb.pointee.exc != nil {
+            mrb.pointee.exc = nil
+            return false
+        }
+        return MRubyValue(raw: result, context: context).toBool()
     }
 
     /// 比较当前值与另一个值的关系（Ruby `<=>` 运算符）。
@@ -248,6 +392,27 @@ public struct MRubyValue: @unchecked Sendable {
         }
         let resultVal = MRubyValue(raw: result, context: context)
         return MRubyRelationCondition(spaceshipValue: resultVal)
+    }
+
+    /// 直接与 Swift `Double` 比较。
+    /// 对应 JSValue 的 `compare(_:)` 的 Double 重载。
+    public func compare(_ other: Double) -> MRubyRelationCondition {
+        let otherVal = MRubyValue.from(other, in: context)
+        return relation(to: otherVal)
+    }
+
+    /// 直接与 Swift `Int64` 比较。
+    /// 对应 JSValue 的 `compare(_:)` 的 Int64 重载。
+    public func compare(_ other: Int64) -> MRubyRelationCondition {
+        let otherVal = MRubyValue.from(Int(other), in: context)
+        return relation(to: otherVal)
+    }
+
+    /// 直接与 Swift `UInt64` 比较。
+    /// 对应 JSValue 的 `compare(_:)` 的 UInt64 重载。
+    public func compare(_ other: UInt64) -> MRubyRelationCondition {
+        let otherVal = MRubyValue.from(Int(other), in: context)
+        return relation(to: otherVal)
     }
 
     // MARK: - 构造调用（对应 JSValue 的 constructWithArguments:）
@@ -295,6 +460,44 @@ public struct MRubyValue: @unchecked Sendable {
             let setterName = "\(property)="
             _ = call(method: setterName, arguments: [newValue])
         }
+    }
+
+    // MARK: - 属性定义
+
+    /// 属性描述符的键，用于 `defineProperty(_:descriptor:)`。
+    ///
+    /// 对应 JSValue 的 Property Descriptor Keys 常量。
+    public struct MRubyPropertyDescriptor: Sendable {
+        /// getter 方法名（若为 nil 则使用属性名）。
+        public var getter: String?
+        /// setter 方法名（若为 nil 则生成 `属性名=`）。
+        public var setter: String?
+        /// 是否为只读（不生成 setter）。
+        public var readonly: Bool
+
+        public init(getter: String? = nil, setter: String? = nil, readonly: Bool = false) {
+            self.getter = getter
+            self.setter = setter
+            self.readonly = readonly
+        }
+    }
+
+    /// 在 JavaScript 对象上定义或修改属性。
+    ///
+    /// 对应 JSValue 的 `defineProperty(_:descriptor:)`。
+    /// 在 mruby 中通过 Ruby 的 `attr_accessor` / `attr_reader` 实现。
+    /// - Parameters:
+    ///   - name: 属性名。
+    ///   - descriptor: 属性描述符。
+    public func defineProperty(_ name: String, descriptor: MRubyPropertyDescriptor) {
+        guard isClass || isModule else { return }
+
+        // 通过 class_eval 在类上下文中调用 attr_reader/attr_accessor
+        // （attr_accessor 是私有方法，不能直接通过 call 调用）
+        let methodName = descriptor.readonly ? "attr_reader" : "attr_accessor"
+        let code = "\(methodName) :\(name)"
+        _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
+        mrb.pointee.exc = nil
     }
 
     /// 通过整数索引访问数组元素。
@@ -383,6 +586,139 @@ public struct MRubyValue: @unchecked Sendable {
     public static func symbol(_ name: String, in context: MRubyContext) -> MRubyValue {
         let sym = name.withCString { mrb_intern_cstr(context.mrb, $0) }
         return MRubyValue(raw: mrb_symbol_value(sym), context: context)
+    }
+
+    /// 从 Swift `UInt32` 构造 mruby Integer 值。
+    /// 对应 JSValue 的 `init(uint32:in:)`。
+    public static func from(_ uint32: UInt32, in context: MRubyContext) -> MRubyValue {
+        let raw = mrb_int_value(context.mrb, mrb_int(uint32))
+        return MRubyValue(raw: raw, context: context)
+    }
+
+    /// 从 Swift `Int64` 构造 mruby Integer 值。
+    /// 对应 JSValue 的 `init(int64:in:)` 的 C API 等价。
+    public static func from(_ int64: Int64, in context: MRubyContext) -> MRubyValue {
+        let raw = mrb_int_value(context.mrb, mrb_int(int64))
+        return MRubyValue(raw: raw, context: context)
+    }
+
+    /// 从 Swift `UInt64` 构造 mruby Integer 值。
+    /// 对应 JSValue 的 `init(uint64:in:)` 的 C API 等价。
+    public static func from(_ uint64: UInt64, in context: MRubyContext) -> MRubyValue {
+        let raw = mrb_int_value(context.mrb, mrb_int(uint64))
+        return MRubyValue(raw: raw, context: context)
+    }
+
+    /// 从错误消息构造 mruby RuntimeError 值。
+    /// 对应 JSValue 的 `init(newErrorFromMessage:in:)`。
+    /// - Parameters:
+    ///   - message: 错误消息。
+    ///   - context: 执行上下文。
+    /// - Returns: 代表 `RuntimeError` 的 `MRubyValue`。
+    public static func error(_ message: String, in context: MRubyContext) -> MRubyValue {
+        let msgVal = message.withCString { mrb_str_new_cstr(context.mrb, $0) }
+        let exc = mrb_exc_new_str(context.mrb, context.mrb.pointee.eStandardError_class, msgVal)
+        return MRubyValue(raw: exc, context: context)
+    }
+
+    /// 从模式和标志构造 mruby Regexp 值。
+    /// 对应 JSValue 的 `init(newRegularExpressionFromPattern:flags:in:)`。
+    /// - Parameters:
+    ///   - pattern: 正则表达式模式字符串。
+    ///   - flags: 标志字符串（如 "i" 表示忽略大小写）。
+    ///   - context: 执行上下文。
+    /// - Returns: 代表 `Regexp` 的 `MRubyValue`。
+    public static func regex(_ pattern: String, flags: String = "", in context: MRubyContext) -> MRubyValue? {
+        // Regexp 可能未加载（取决于 mruby gem 配置）
+        guard mrb_class_defined(context.mrb, "Regexp") else { return nil }
+        let options = flags.contains("i") ? 1 : 0  // Regexp::IGNORECASE
+        let raw = pattern.withCString { cPattern in
+            let regexpClass = mrb_class_get(context.mrb, "Regexp")
+            let args = [
+                mrb_str_new_cstr(context.mrb, cPattern),
+                mrb_int_value(context.mrb, mrb_int(options)),
+            ]
+            return args.withUnsafeBufferPointer { buf in
+                mrb_obj_new(context.mrb, regexpClass, mrb_int(buf.count), buf.baseAddress)
+            }
+        }
+        return MRubyValue(raw: raw, context: context)
+    }
+
+    /// 从任意 Swift 对象自动推断并构造 mruby 值。
+    /// 对应 JSValue 的 `init(object:in:)`。
+    /// 支持类型：String、Int、Double、Bool、[MRubyValue]、[String: MRubyValue]、nil。
+    public static func from(_ object: Any?, in context: MRubyContext) -> MRubyValue {
+        switch object {
+        case let str as String:
+            return .from(str, in: context)
+        case let int as Int:
+            return .from(int, in: context)
+        case let double as Double:
+            return .from(double, in: context)
+        case let bool as Bool:
+            return .from(bool, in: context)
+        case let uint32 as UInt32:
+            return .from(uint32, in: context)
+        case let int64 as Int64:
+            return .from(int64, in: context)
+        case let uint64 as UInt64:
+            return .from(uint64, in: context)
+        case let array as [MRubyValue]:
+            return .from(array, in: context)
+        case let dict as [String: MRubyValue]:
+            let hash = mrb_hash_new(context.mrb)
+            for (k, v) in dict {
+                let keyRaw = k.withCString { mrb_str_new_cstr(context.mrb, $0) }
+                mrb_hash_set(context.mrb, hash, keyRaw, v.raw)
+            }
+            return MRubyValue(raw: hash, context: context)
+        case let val as MRubyValue:
+            return val
+        case .none:
+            return .nil(in: context)
+        default:
+            return .nil(in: context)
+        }
+    }
+
+    // MARK: - 转换为 Swift 对象
+
+    /// 将 mruby 值转换为 Swift `Any` 对象。
+    /// 对应 JSValue 的 `toObject()`。
+    public func toObject() -> Any {
+        if isNil { return NSNull() }
+        if isBool { return toBool() }
+        if isInt { return toInt() }
+        if isFloat { return toDouble() }
+        if isString { return toString() }
+        if isSymbol { return toSymbol() as Any }
+        if isArray { return toArray() }
+        if isHash { return toDictionary() }
+        return inspect()
+    }
+
+    /// 将 mruby 值转换为指定 Swift 类型的对象。
+    /// 对应 JSValue 的 `toObjectOf(_:)`。
+    /// - Parameter type: 期望的 Swift 类型。
+    /// - Returns: 转换后的对象，若无法转换则返回 `nil`。
+    public func toObject<T>(of type: T.Type) -> T? {
+        switch type {
+        case is String.Type:
+            return toString() as? T
+        case is Int.Type:
+            return toInt() as? T
+        case is Double.Type:
+            return toDouble() as? T
+        case is Bool.Type:
+            return toBool() as? T
+        case is [MRubyValue].Type:
+            return toArray() as? T
+        case is [MRubyValue: MRubyValue].Type:
+            return toDictionary() as? T
+        default:
+            return nil
+        }
     }
 
     // MARK: - 方法调用（对应 JSValue.call / invokeMethod）

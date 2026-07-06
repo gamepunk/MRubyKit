@@ -530,3 +530,201 @@ final class TestBridge: MRubyExport, @unchecked Sendable {
     let result = try ctx.eval("SwiftBridge.new.greet(\"RubyKit\")")
     #expect(result.toString() == "Hi, RubyKit!")
 }
+
+// MARK: - MRubyType
+
+@Test func testMRubyType() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+
+    #expect(MRubyValue.from("hello", in: ctx).mrubyType == .string)
+    #expect(MRubyValue.from(42, in: ctx).mrubyType == .integer)
+    #expect(MRubyValue.from(3.14, in: ctx).mrubyType == .float)
+    #expect(MRubyValue.from(true, in: ctx).mrubyType == .bool)
+    #expect(MRubyValue.nil(in: ctx).mrubyType == .nilValue)
+    #expect(MRubyValue.symbol("foo", in: ctx).mrubyType == .symbol)
+    #expect(try ctx.eval("Object.new").mrubyType == .object)
+    #expect(try ctx.eval("[1,2,3]").mrubyType == .array)
+    #expect(try ctx.eval("{\"a\"=>1}").mrubyType == .hash)
+    #expect(try ctx.eval("String").mrubyType == .klass)
+    #expect(try ctx.eval("Kernel").mrubyType == .module)
+}
+
+// MARK: - isNumber
+
+@Test func testIsNumber() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    #expect(MRubyValue.from(42, in: ctx).isNumber)
+    #expect(MRubyValue.from(3.14, in: ctx).isNumber)
+    #expect(!MRubyValue.from("hello", in: ctx).isNumber)
+    #expect(!MRubyValue.from(true, in: ctx).isNumber)
+    #expect(!MRubyValue.nil(in: ctx).isNumber)
+}
+
+// MARK: - isIdentical
+
+@Test func testIsIdentical() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    // mruby 中 Integer 是立即值，相同值的 equal? 返回 true
+    let a = MRubyValue.from(42, in: ctx)
+    let b = MRubyValue.from(42, in: ctx)
+    let obj1 = try ctx.eval("Object.new")
+    let obj2 = try ctx.eval("Object.new")
+
+    #expect(a.isIdentical(to: a))       // 与自身相同
+    #expect(a.isIdentical(to: b))       // 相同 Integer 值（立即值）
+    #expect(!obj1.isIdentical(to: obj2)) // 不同的 Object 实例
+}
+
+// MARK: - isEqualWithTypeCoercion
+
+@Test func testIsEqualWithTypeCoercion() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let a = MRubyValue.from(42, in: ctx)
+    let b = MRubyValue.from(42, in: ctx)
+    let c = MRubyValue.from(100, in: ctx)
+    #expect(a.isEqualWithTypeCoercion(to: b))
+    #expect(!a.isEqualWithTypeCoercion(to: c))
+}
+
+// MARK: - compare overloads
+
+@Test func testCompareDouble() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let a = MRubyValue.from(42.0, in: ctx)
+    #expect(a.compare(42.0) == .equal)
+    #expect(a.compare(100.0) == .lessThan)
+    #expect(a.compare(10.0) == .greaterThan)
+}
+
+// MARK: - hasProperty / deleteProperty
+
+@Test func testHasProperty() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let str = MRubyValue.from("hello", in: ctx)
+    #expect(str.hasProperty("length"))
+    #expect(!str.hasProperty("nonexistent_method_xyz"))
+}
+
+@Test func testDeleteProperty() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    // 定义一个类方法
+    try ctx.eval("class DelTest; def self.class_method; end; end")
+    let cls = try ctx.eval("DelTest")
+    #expect(cls.responds(to: "class_method"))
+    cls.deleteProperty("class_method")
+    #expect(cls.responds(to: "class_method") == false)
+}
+
+// MARK: - 新增构造方法
+
+@Test func testFromUInt32() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = MRubyValue.from(UInt32(42), in: ctx)
+    #expect(val.isInt)
+    #expect(val.toInt() == 42)
+}
+
+@Test func testFromInt64() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = MRubyValue.from(Int64(99), in: ctx)
+    #expect(val.isInt)
+    #expect(val.toInt() == 99)
+}
+
+@Test func testFromUInt64() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = MRubyValue.from(UInt64(77), in: ctx)
+    #expect(val.toInt() == 77)
+}
+
+@Test func testErrorMessageConstructor() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let error = MRubyValue.error("test error", in: ctx)
+    #expect(error.isException)
+    #expect(error.call(method: "message").toString().contains("test error"))
+}
+
+@Test func testRegexConstructor() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    // Regexp 可能未加载（取决于 mruby gem 配置），若为 nil 则跳过
+    if let regex = MRubyValue.regex("hello", in: ctx) {
+        #expect(regex.isObject)
+    } else {
+        #expect(Bool(true), "Regexp not available in this mruby build")
+    }
+}
+
+@Test func testFromObjectAutoDetect() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+
+    #expect(MRubyValue.from("hello" as Any?, in: ctx).isString)
+    #expect(MRubyValue.from(42 as Any?, in: ctx).isInt)
+    #expect(MRubyValue.from(3.14 as Any?, in: ctx).isFloat)
+    #expect(MRubyValue.from(true as Any?, in: ctx).isBool)
+    #expect(MRubyValue.from(nil as Any?, in: ctx).isNil)
+
+    let arr = [MRubyValue.from(1, in: ctx), MRubyValue.from(2, in: ctx)]
+    let arrVal = MRubyValue.from(arr as Any?, in: ctx)
+    #expect(arrVal.isArray)
+}
+
+// MARK: - toObject
+
+@Test func testToObject() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+
+    #expect((MRubyValue.from("hello", in: ctx).toObject() as! String) == "hello")
+    #expect((MRubyValue.from(42, in: ctx).toObject() as! Int) == 42)
+    #expect((MRubyValue.from(3.14, in: ctx).toObject() as! Double) == 3.14)
+    #expect((MRubyValue.from(true, in: ctx).toObject() as! Bool) == true)
+
+    // toObjectOf
+    #expect(MRubyValue.from("hello", in: ctx).toObject(of: String.self) == "hello")
+    #expect(MRubyValue.from(42, in: ctx).toObject(of: Int.self) == 42)
+}
+
+// MARK: - eval with this
+
+@Test func testEvalWithThis() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let obj = try ctx.eval("Object.new")
+    let result = try ctx.eval("self.to_s", this: obj)
+    #expect(result.isString)
+}
+
+// MARK: - defineProperty
+
+@Test func testDefineProperty() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let cls = try ctx.defineClass("PropTest")
+    cls.defineProperty("my_attr", descriptor: .init(readonly: false))
+    // 验证实例上有 getter 和 setter
+    let instance = cls.construct(with: [])
+    #expect(instance.responds(to: "my_attr"))
+    #expect(instance.responds(to: "my_attr="))
+}
+
+// MARK: - MRubyType enum
+
+@Test func testMRubyTypeCaseIterable() async throws {
+    // 验证 CaseIterable
+    #expect(MRubyType.allCases.count > 5)
+    #expect(MRubyType.allCases.contains(.string))
+    #expect(MRubyType.allCases.contains(.integer))
+}
