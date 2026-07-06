@@ -1,32 +1,45 @@
 // swift-tools-version: 6.4
-// The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
 
 let package = Package(
-    name: "RubyKit",
+    name: "MRubyKit",
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
-        .library(
-            name: "RubyKit",
-            targets: ["RubyKit"]
-        ),
+        .library(name: "MRubyKit", targets: ["MRubyKit"]),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
-        .target(
-            name: "RubyKit",
-            swiftSettings: [
-                .enableUpcomingFeature("ApproachableConcurrency"),
-            ],
+        // mruby 4.0.0 预编译静态库（Apple 全平台 XCFramework）
+        // 由 scripts/build.sh 生成
+        .binaryTarget(
+            name: "MRuby",
+            path: "build/MRuby.xcframework"
         ),
-        .testTarget(
-            name: "RubyKitTests",
-            dependencies: ["RubyKit"],
+
+        // C 桥接层：
+        //   - 汇总 mruby 公开头文件（shim.h）
+        //   - 将 Swift 无法调用的函数式宏包装为普通 C 内联函数
+        .target(
+            name: "CMRuby",
+            dependencies: ["MRuby"],
+            path: "Sources/CMRuby",
+            publicHeadersPath: "include"
+        ),
+
+        // Swift 封装层
+        .target(
+            name: "MRubyKit",
+            dependencies: ["CMRuby"],
             swiftSettings: [
                 .enableUpcomingFeature("ApproachableConcurrency"),
-            ],
+            ]
+        ),
+
+        .testTarget(
+            name: "MRubyKitTests",
+            dependencies: ["MRubyKit"],
+            swiftSettings: [
+                .enableUpcomingFeature("ApproachableConcurrency"),
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]
