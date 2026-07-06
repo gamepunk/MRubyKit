@@ -1,0 +1,9 @@
+name: mruby-blendish
+description: Duangle OUI-blendish bindings.
+author: Corey Powell
+website: https://github.com/IceDragon200/mruby-blendish
+protocol: git
+repository: https://github.com/IceDragon200/mruby-blendish
+dependencies:
+- mruby-nanovg
+license: MIT

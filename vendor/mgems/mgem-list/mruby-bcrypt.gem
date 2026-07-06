@@ -1,0 +1,7 @@
+name: mruby-bcrypt
+description: OpenBSD-style Blowfish-based password hashing
+author: Emanuele Vicentini
+website: https://github.com/baldowl/mruby-bcrypt
+protocol: git
+repository: https://github.com/baldowl/mruby-bcrypt.git
+license: MIT

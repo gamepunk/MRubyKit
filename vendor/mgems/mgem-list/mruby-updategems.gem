@@ -1,0 +1,7 @@
+name: mruby-updategems
+description: Rake task to update GEMs
+author: mattn
+website: https://github.com/mattn/mruby-updategems
+protocol: git
+repository: https://github.com/mattn/mruby-updategems.git
+license: MIT

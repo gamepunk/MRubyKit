@@ -1,0 +1,7 @@
+name: mruby-base32
+description: Base32 Encoder/Decoder
+author: qtakamitsu
+website: https://github.com/tk3/mruby-base32
+protocol: git
+repository: https://github.com/tk3/mruby-base32.git
+license: MIT

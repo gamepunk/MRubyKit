@@ -1,0 +1,7 @@
+name: mruby-dir
+description: Dir Class
+author: Internet Initiative Japan., Inc.
+website: https://github.com/iij/mruby-dir
+protocol: git
+repository: https://github.com/iij/mruby-dir.git
+license: MIT and MIT-like license

@@ -1,0 +1,7 @@
+name: mruby-murmurhash2
+description: Murmurhash2 digest
+author: ksss
+website: https://github.com/ksss/mruby-murmurhash2
+protocol: git
+repository: https://github.com/ksss/mruby-murmurhash2.git
+license: MIT

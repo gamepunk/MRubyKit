@@ -1,0 +1,7 @@
+name: mruby-base58
+description: Base58 Encoder/Decoder (third-party fork)
+author: h2so5
+website: https://github.com/sadasant/mruby-base58
+protocol: git
+repository: https://github.com/sadasant/mruby-base58.git
+license: MIT

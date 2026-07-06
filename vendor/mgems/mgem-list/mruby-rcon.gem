@@ -1,0 +1,7 @@
+name: mruby-rcon
+description: resource management mrbgem using cgroup
+author: MATSUMOTO Ryosuke
+website: https://github.com/matsumotory/mruby-rcon
+protocol: git
+repository: https://github.com/matsumotory/mruby-rcon.git
+license: MIT

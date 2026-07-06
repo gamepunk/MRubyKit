@@ -1,0 +1,7 @@
+name: mruby-lmdb
+description: mruby wrapper for Lightning Memory-Mapped Database from Symas.
+author: Hendrik Beskow
+website: https://github.com/Asmod4n/mruby-lmdb
+protocol: git
+repository: https://github.com/Asmod4n/mruby-lmdb.git
+license: Apache-2

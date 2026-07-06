@@ -1,0 +1,14 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+    yaml (0.4.0)
+
+PLATFORMS
+  x86_64-darwin-21
+  x86_64-linux
+
+DEPENDENCIES
+  yaml
+
+BUNDLED WITH
+  2.4.1

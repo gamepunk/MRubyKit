@@ -1,0 +1,7 @@
+name: mruby-geoip
+description: GeoIP(City) class using GeoIPCity.dat for mruby
+author: MATSUMOTO Ryosuke
+website: https://github.com/matsumotory/mruby-geoip
+protocol: git
+repository: https://github.com/matsumotory/mruby-geoip.git
+license: MIT

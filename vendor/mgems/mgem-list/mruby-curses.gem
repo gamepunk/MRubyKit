@@ -1,0 +1,7 @@
+name: mruby-curses
+description: Curses for mruby. Links to NCurses or PDCurses.
+author: Jared Breeden
+website: https://github.com/jbreeden/mruby-curses
+protocol: git
+repository: https://github.com/jbreeden/mruby-curses.git
+license: MIT

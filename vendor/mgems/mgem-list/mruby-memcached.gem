@@ -1,0 +1,7 @@
+name: mruby-memcached
+description: libmemcached bindings by mruby
+author: MATSUMOTO Ryosuke
+website: https://github.com/matsumotory/mruby-memcached
+protocol: git
+repository: https://github.com/matsumotory/mruby-memcached.git
+license: MIT
