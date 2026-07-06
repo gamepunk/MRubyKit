@@ -752,6 +752,33 @@ final class TestBridge: MRubyExport, @unchecked Sendable {
     #expect(instance.responds(to: "my_attr="))
 }
 
+// MARK: - undefined
+
+@Test func testUndefinedValue() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let undef = MRubyValue.undefined(in: ctx)
+    #expect(undef.isUndefined)
+    #expect(!undef.isNil)
+    #expect(!undef.isBool)
+    #expect(undef.mrubyType == .undefined)
+}
+
+@Test func testUndefinedVsNil() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    // JavaScript: null vs undefined
+    // Ruby/mruby: nil (MRB_TT_FALSE+0) vs undefined (MRB_TT_UNDEF)
+    let nilVal   = MRubyValue.nil(in: ctx)
+    let undefVal = MRubyValue.undefined(in: ctx)
+    #expect(nilVal.isNil)
+    #expect(!nilVal.isUndefined)
+    #expect(undefVal.isUndefined)
+    #expect(!undefVal.isNil)
+    #expect(nilVal.mrubyType == .nilValue)
+    #expect(undefVal.mrubyType == .undefined)
+}
+
 // MARK: - MRubyType enum
 
 @Test func testMRubyTypeCaseIterable() async throws {

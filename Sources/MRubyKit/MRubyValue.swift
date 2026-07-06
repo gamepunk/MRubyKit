@@ -151,9 +151,10 @@ public struct MRubyValue: @unchecked Sendable {
     /// 值的运行时类型分类。
     /// 对应 JSValue 无直接属性，但 C API 中有 `JSValueGetType`。
     public var mrubyType: MRubyType {
-        // 对于 MRB_TT_FALSE，需要进一步区分 nil 和 false
-        if isNil  { return .nilValue }
-        if isTrue { return .bool }
+        if isNil       { return .nilValue }
+        if isFalse     { return .bool }
+        if isTrue      { return .bool }
+        if isUndefined { return .undefined }
         return MRubyType(mrbTypeValue: raw)
     }
 
@@ -578,8 +579,18 @@ public struct MRubyValue: @unchecked Sendable {
     }
 
     /// 构造 mruby `nil` 值。
+    /// 对应 JavaScript 的 `null`。
     public static func `nil`(in context: MRubyContext) -> MRubyValue {
         MRubyValue(raw: mrb_nil_value(), context: context)
+    }
+
+    /// 构造 mruby undefined 值（`MRB_TT_UNDEF`）。
+    ///
+    /// 对应 JavaScript 的 `undefined`（而 `nil` 对应 `null`）。
+    /// 在 Ruby 层面通常不直接使用，但可通过 C API 创建和传递。
+    /// 可用 `isUndefined` 检查。
+    public static func `undefined`(in context: MRubyContext) -> MRubyValue {
+        MRubyValue(raw: mrb_bridge_undef_value(), context: context)
     }
 
     /// 从名称字符串构造 mruby Symbol 值。

@@ -82,4 +82,13 @@ static inline struct RException* mrb_bridge_exc_ptr(mrb_value v) {
   return mrb_exc_ptr(v);
 }
 
+// 宏包装：创建 mruby undefined 值（MRB_TT_UNDEF）
+// 对应 JavaScript 的 `undefined`，mruby 内部使用。
+// 在 Ruby 层面不常用，但可通过 C API 创建。
+static inline mrb_value mrb_bridge_undef_value(void) {
+  mrb_value v;
+  SET_UNDEF_VALUE(v);
+  return v;
+}
+
 #endif /* CMRUBY_SHIM_H */
