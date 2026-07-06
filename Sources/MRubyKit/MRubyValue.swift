@@ -141,6 +141,18 @@ public struct MRubyValue: @unchecked Sendable {
     /// 对应 JSValue 的 `isNumber`。
     public var isNumber: Bool { isInt || isFloat }
 
+    /// 值是否为可调用函数/Proc。
+    /// 对应 C API 的 `JSObjectIsFunction`。
+    public var isFunction: Bool {
+        isProc || responds(to: "call")
+    }
+
+    /// 值是否为可调用的构造函数。
+    /// 对应 C API 的 `JSObjectIsConstructor`。
+    public var isConstructor: Bool {
+        isClass || isModule
+    }
+
     /// 值是否为非基本类型的 Ruby 对象（Object 实例）。
     /// 对于 nil、true、false、Integer、Float、Symbol 等立即值返回 `false`。
     /// 对应 JSValue 的 `isObject`。
@@ -392,9 +404,56 @@ public struct MRubyValue: @unchecked Sendable {
         return MRubyValue(raw: result, context: context).toBool()
     }
 
+    // MARK: - JSON 序列化
+
+    /// 将 mruby 值序列化为 JSON 字符串。
+    /// 对应 C API 的 `JSValueCreateJSONString`。
+    public func toJSON() -> String? {
+        let result = call(method: "to_json")
+        if mrb.pointee.exc != nil {
+            mrb.pointee.exc = nil
+            return nil
+        }
+        return result.toString()
+    }
+
+    /// 从 JSON 字符串创建 mruby 值。
+    /// 对应 C API 的 `JSValueMakeFromJSONString`。
+    /// - Parameter json: JSON 字符串。
+    /// - Returns: 解析后的 MRubyValue，解析失败时返回 nil。
+    public static func fromJSON(_ json: String, in context: MRubyContext) -> MRubyValue? {
+        // 用 JSON.parse 解析，通过字符串拼接传入 JSON
+        let escaped = json.replacingOccurrences(of: "'", with: "\\\\'")
+        let code = "JSON.parse('\(escaped)')"
+        let result = code.withCString { cCode in
+            mrb_load_string(context.mrb, cCode)
+        }
+        if context.mrb.pointee.exc != nil {
+            context.mrb.pointee.exc = nil
+            return nil
+        }
+        return MRubyValue(raw: result, context: context)
+    }
+
+    // MARK: - 原型链
+
+    /// 获取对象的 Ruby 类。
+    /// 对应 C API 的 `JSObjectGetPrototype`。
+    public var prototype: MRubyValue? {
+        call(method: "class")
+    }
+
+    /// 获取对象的父类（仅对类/模块有效）。
+    /// 对应 C API 的通过原型链获取 superclass。
+    public var superclass: MRubyValue? {
+        guard isClass || isModule else { return nil }
+        let result = call(method: "superclass")
+        return result.isNil ? nil : result
+    }
+
+    // MARK: - 比较
+
     /// 比较当前值与另一个值的关系（Ruby `<=>` 运算符）。
-    ///
-    /// 对应 JavaScriptCore 中 `JSValue` 的比较方法，返回 `MRubyRelationCondition`。
     ///
     /// ```swift
     /// let a = MRubyValue.from(42, in: ctx)
@@ -485,6 +544,24 @@ public struct MRubyValue: @unchecked Sendable {
             let setterName = "\(property)="
             _ = call(method: setterName, arguments: [newValue])
         }
+    }
+
+    // MARK: - Property Attributes
+
+    /// JavaScript 属性特性常量。
+    /// 对应 C API 的 `JSPropertyAttribute`。
+    public struct MRubyPropertyAttribute: OptionSet, Sendable {
+        public let rawValue: UInt32
+        public init(rawValue: UInt32) { self.rawValue = rawValue }
+
+        /// 属性不可读或不可写。
+        public static let none          = MRubyPropertyAttribute(rawValue: 0)
+        /// 属性可读。
+        public static let readOnly      = MRubyPropertyAttribute(rawValue: 1 << 0)
+        /// 属性在枚举中不显示。
+        public static let dontEnum      = MRubyPropertyAttribute(rawValue: 1 << 1)
+        /// 属性不可配置（不能删除）。
+        public static let dontDelete    = MRubyPropertyAttribute(rawValue: 1 << 2)
     }
 
     // MARK: - Property Descriptor Keys
