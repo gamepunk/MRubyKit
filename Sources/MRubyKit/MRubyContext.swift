@@ -118,6 +118,13 @@ public final class MRubyContext: @unchecked Sendable {
     /// 上下文名称，仅用于调试标识，对应 `JSContext.name`。
     public var name: String = ""
 
+    /// 是否可被 Safari Web Inspector 检查。
+    ///
+    /// 对应 JSContext 的 `isInspectable`。
+    /// mruby 没有 Web Inspector 支持，始终返回 `false`。
+    /// 子类可重写此属性以自定义行为。
+    public var isInspectable: Bool { false }
+
     // MARK: - 内部属性
 
     var mrb: UnsafeMutablePointer<mrb_state> { virtualMachine.mrb }

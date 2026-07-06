@@ -26,8 +26,11 @@ import Foundation
 /// - `JSManagedValue(value:owner:)` → 值与 owner 生命周期绑定
 public final class MRubyManagedValue: @unchecked Sendable {
 
-    /// 被管理的 Ruby 值。
+    /// 被管理的 Ruby 值（对应 JSManagedValue 的 `value` 属性）。
     public let rubyValue: MRubyValue
+
+    /// 被管理的 Ruby 值（JSManagedValue 兼容别名）。
+    public var value: MRubyValue { rubyValue }
 
     /// 所属虚拟机。
     public let virtualMachine: MRubyVM

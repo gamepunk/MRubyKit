@@ -433,7 +433,24 @@ import Testing
     let val = try ctx.eval("\"hello\"")
     let managed = MRubyManagedValue(value: val)
     #expect(managed.rubyValue.toString() == "hello")
+    #expect(managed.value.toString() == "hello")  // JSC 兼容别名
     #expect(managed.virtualMachine === vm)
+}
+
+@Test func testIsInspectable() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    // mruby 没有 Web Inspector，始终为 false
+    #expect(ctx.isInspectable == false)
+}
+
+@Test func testManagedValueValueAlias() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = try ctx.eval("\"world\"")
+    let managed = MRubyManagedValue(value: val, owner: ctx)
+    // value 别名应与 rubyValue 相同
+    #expect(managed.value.toString() == managed.rubyValue.toString())
 }
 
 @Test func testManagedValueWithOwner() async throws {
