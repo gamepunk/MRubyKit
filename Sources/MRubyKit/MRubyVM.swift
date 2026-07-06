@@ -72,20 +72,58 @@ public final class MRubyVM: @unchecked Sendable {
 
     // MARK: - 对象生命周期管理
 
-    /// 将对象注册到 GC 根集合，防止被回收。
+    /// 将 Ruby 值注册到 GC 根集合，防止被回收。
     ///
-    /// 对应 JSVirtualMachine 的 `addManagedReference(_:withOwner:)`。
-    /// 当需要跨作用域保持一个 mruby 值的存活时使用。
+    /// 底层调用 `mrb_gc_register`。当需要跨作用域保持一个 mruby 值的存活时使用。
     /// - Parameter value: 需要保护的值。
     public func retain(_ value: MRubyValue) {
         mrb_gc_register(mrb, value.raw)
     }
 
-    /// 从 GC 根集合中移除对象。
+    /// 从 GC 根集合中移除 Ruby 值的保护。
     ///
-    /// 对应 JSVirtualMachine 的 `removeManagedReference(_:withOwner:)`。
+    /// 底层调用 `mrb_gc_unregister`。
     /// - Parameter value: 不再需要保护的值。
     public func release(_ value: MRubyValue) {
         mrb_gc_unregister(mrb, value.raw)
     }
+
+    /// 通知虚拟机一个外部对象关系——原生 owner 持有了一个 Ruby 值。
+    ///
+    /// 对应 JSVirtualMachine 的 `addManagedReference(_:withOwner:)`。
+    /// 当你的 Swift 对象持有一个 `MRubyValue` 时，调用此方法告知 VM，
+    /// 以便 VM 在该值仍然被原生层引用时不会回收它。
+    ///
+    /// - Parameters:
+    ///   - object: 被持有的 Ruby 值（MRubyValue）。
+    ///   - owner: 持有该值的 Swift 原生对象。
+    public func addManagedReference(_ object: MRubyValue, withOwner owner: AnyObject) {
+        mrb_gc_register(mrb, object.raw)
+        // 记录 owner->value 映射，便于生命周期追踪
+        managedReferences[ObjectIdentifier(owner), default: []].append(object)
+    }
+
+    /// 移除之前通过 `addManagedReference(_:withOwner:)` 注册的对象关系。
+    ///
+    /// 对应 JSVirtualMachine 的 `removeManagedReference(_:withOwner:)`。
+    /// - Parameters:
+    ///   - object: 之前注册的 Ruby 值。
+    ///   - owner: 之前注册的原生 owner。
+    public func removeManagedReference(_ object: MRubyValue, withOwner owner: AnyObject) {
+        mrb_gc_unregister(mrb, object.raw)
+        let key = ObjectIdentifier(owner)
+        if var refs = managedReferences[key] {
+            refs.removeAll { $0.inspect() == object.inspect() }
+            if refs.isEmpty {
+                managedReferences.removeValue(forKey: key)
+            } else {
+                managedReferences[key] = refs
+            }
+        }
+    }
+
+    // MARK: - 内部
+
+    /// owner → [MRubyValue] 映射表，用于追踪 managed reference 关系。
+    var managedReferences: [ObjectIdentifier: [MRubyValue]] = [:]
 }

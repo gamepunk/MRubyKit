@@ -40,7 +40,7 @@ public final class MRubyManagedValue: @unchecked Sendable {
 
     // MARK: - 创建
 
-    /// 创建一个托管值，归入指定 VM 的保护。
+    /// 创建一个托管值，归入指定 VM 的保护（无 owner）。
     ///
     /// 值会被 `mrb_gc_register` 保护，直到 `MRubyManagedValue` 被释放。
     /// - Parameter value: 需要托管的 Ruby 值。
@@ -53,8 +53,9 @@ public final class MRubyManagedValue: @unchecked Sendable {
 
     /// 创建一个与 owner 生命周期绑定的托管值。
     ///
-    /// 当 owner 被 Swift ARC 释放时，该值会自动从 mruby GC 保护中移除，
-    /// 使其可被 mruby GC 正常回收。
+    /// 对应 JSManagedValue 的 `init(value:andOwner:)`。
+    /// 内部调用 `addManagedReference(_:withOwner:)` 告知 VM 该对象关系，
+    /// 当 owner 被 Swift ARC 释放时，该值会自动从 mruby GC 保护中移除。
     /// - Parameters:
     ///   - value: 需要托管的 Ruby 值。
     ///   - owner: 拥有该值的 Swift 对象。使用 `weak` 引用，不会延长其生命周期。
@@ -62,13 +63,18 @@ public final class MRubyManagedValue: @unchecked Sendable {
         self.rubyValue = value
         self.virtualMachine = value.context.virtualMachine
         self.owner = owner
-        virtualMachine.retain(value)
+        // 使用 addManagedReference 注册 owner 关系（匹配 JSC 行为）
+        virtualMachine.addManagedReference(value, withOwner: owner)
     }
 
     deinit {
         // 仅在尚未释放时注销
         if isProtected {
-            virtualMachine.release(rubyValue)
+            if let owner = owner {
+                virtualMachine.removeManagedReference(rubyValue, withOwner: owner)
+            } else {
+                virtualMachine.release(rubyValue)
+            }
             isProtected = false
         }
     }
@@ -81,7 +87,11 @@ public final class MRubyManagedValue: @unchecked Sendable {
     /// 对应 JSManagedValue 没有直接等价 API，但可在 owner 提前释放时使用。
     public func dispose() {
         guard isProtected else { return }
-        virtualMachine.release(rubyValue)
+        if let owner = owner {
+            virtualMachine.removeManagedReference(rubyValue, withOwner: owner)
+        } else {
+            virtualMachine.release(rubyValue)
+        }
         isProtected = false
     }
 }

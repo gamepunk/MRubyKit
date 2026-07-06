@@ -363,6 +363,38 @@ import Testing
     #expect(Bool(true))
 }
 
+@Test func testAddRemoveManagedReference() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+
+    class OwnerClass {}
+    let owner = OwnerClass()
+    let val = try ctx.eval("\"managed\"")
+
+    vm.addManagedReference(val, withOwner: owner)
+    #expect(vm.managedReferences[ObjectIdentifier(owner)]?.count == 1)
+
+    vm.removeManagedReference(val, withOwner: owner)
+    #expect(vm.managedReferences[ObjectIdentifier(owner)] == nil)
+}
+
+@Test func testManagedValueWithOwnerUsesAddManagedReference() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+
+    class OwnerClass {}
+    let owner = OwnerClass()
+    let val = try ctx.eval("\"owner-test\"")
+
+    let managed = MRubyManagedValue(value: val, owner: owner)
+    // 通过 owner 创建时，应在 managedReferences 中有记录
+    let key = ObjectIdentifier(owner)
+    #expect(vm.managedReferences[key]?.count == 1)
+
+    managed.dispose()
+    #expect(vm.managedReferences[key] == nil)
+}
+
 @Test func testGCSettings() async throws {
     let vm = try MRubyVM()
     let oldThreshold = vm.gcThreshold
