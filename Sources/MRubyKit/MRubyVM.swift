@@ -81,6 +81,22 @@ public final class MRubyVM: @unchecked Sendable {
         mrb_gc_register(mrb, value.raw)
     }
 
+    /// 按指定条件保护 Ruby 值。
+    ///
+    /// 对应 JSVirtualMachine 的 `addManagedReference(_:withOwner:condition:)`。
+    /// - Parameters:
+    ///   - value: 需要管理的 Ruby 值。
+    ///   - condition: 保护条件。
+    public func retain(_ value: MRubyValue, condition: MRubyRelationCondition) {
+        switch condition {
+        case .objectRequired, .undefined:
+            mrb_gc_register(mrb, value.raw)
+        case .objectNotRequired:
+            // 不注册到 GC 根集合，让正常 mark 机制管理
+            break
+        }
+    }
+
     /// 从 GC 根集合中移除对象。
     ///
     /// 对应 JSVirtualMachine 的 `removeManagedReference(_:withOwner:)`。
@@ -88,4 +104,27 @@ public final class MRubyVM: @unchecked Sendable {
     public func release(_ value: MRubyValue) {
         mrb_gc_unregister(mrb, value.raw)
     }
+
+    /// 按指定条件解除 Ruby 值的保护。
+    ///
+    /// 对应 JSVirtualMachine 的 `removeManagedReference(_:withOwner:condition:)`。
+    /// - Parameters:
+    ///   - value: 需要解除管理的 Ruby 值。
+    ///   - condition: 之前使用的保护条件。
+    public func release(_ value: MRubyValue, condition: MRubyRelationCondition) {
+        switch condition {
+        case .objectRequired, .undefined:
+            mrb_gc_unregister(mrb, value.raw)
+        case .objectNotRequired:
+            break
+        }
+    }
+}
+
+// MARK: - MRubyRelationCondition 导入
+
+/// 使 `MRubyVM` 的方法能使用 `MRubyRelationCondition`，无需在 `MRubyVM.swift` 中重复定义。
+/// 该类型定义在 `MRubyManagedValue.swift` 中。
+extension MRubyVM {
+    /// 受条件管理的引用——当前仅用于标记重载方法的区分度，无额外作用。
 }

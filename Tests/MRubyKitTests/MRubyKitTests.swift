@@ -419,6 +419,60 @@ import Testing
     #expect(managed.rubyValue.toString() == "world") // 值本身仍然可访问
 }
 
+// MARK: - MRubyRelationCondition
+
+@Test func testManagedValueWithConditionUndefined() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = try ctx.eval("\"hello\"")
+    // undefined 等同于 objectRequired
+    let managed = MRubyManagedValue(value: val, owner: nil, condition: .undefined)
+    #expect(managed.rubyValue.toString() == "hello")
+    managed.dispose()
+}
+
+@Test func testManagedValueWithConditionObjectRequired() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = try ctx.eval("\"hello\"")
+
+    class Owner {}
+    let owner = Owner()
+    let managed = MRubyManagedValue(value: val, owner: owner, condition: .objectRequired)
+    #expect(managed.rubyValue.toString() == "hello")
+}
+
+@Test func testManagedValueWithConditionObjectNotRequired() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = try ctx.eval("\"hello\"")
+    // objectNotRequired 不会调用 mrb_gc_register
+    // 值仍可正常访问（因为栈上还有引用）
+    let managed = MRubyManagedValue(value: val, owner: nil, condition: .objectNotRequired)
+    #expect(managed.rubyValue.toString() == "hello")
+}
+
+@Test func testVMRetainWithCondition() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = try ctx.eval("\"test\"")
+
+    // objectRequired: 注册到 GC 根
+    vm.retain(val, condition: .objectRequired)
+    vm.release(val, condition: .objectRequired)
+    #expect(Bool(true))
+
+    // objectNotRequired: 不注册（No-op，不会崩溃）
+    vm.retain(val, condition: .objectNotRequired)
+    vm.release(val, condition: .objectNotRequired)
+    #expect(Bool(true))
+
+    // undefined: 等同于 objectRequired
+    vm.retain(val, condition: .undefined)
+    vm.release(val, condition: .undefined)
+    #expect(Bool(true))
+}
+
 // MARK: - MRubyExport
 
 // 测试用的导出类
