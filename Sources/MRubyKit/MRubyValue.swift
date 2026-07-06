@@ -190,6 +190,30 @@ public struct MRubyValue: @unchecked Sendable {
         Int(mrb_bridge_integer(raw))
     }
 
+    /// 转为 Swift `Int32`。
+    /// 对应 JSValue 的 `toInt32()`。
+    public func toInt32() -> Int32 {
+        Int32(mrb_bridge_integer(raw))
+    }
+
+    /// 转为 Swift `UInt32`。
+    /// 对应 JSValue 的 `toUInt32()`。
+    public func toUInt32() -> UInt32 {
+        UInt32(bitPattern: Int32(mrb_bridge_integer(raw)))
+    }
+
+    /// 转为 Swift `Int64`。
+    /// 对应 JSValue 的 `toInt64()`。
+    public func toInt64() -> Int64 {
+        Int64(mrb_bridge_integer(raw))
+    }
+
+    /// 转为 Swift `UInt64`。
+    /// 对应 JSValue 的 `toUInt64()`。
+    public func toUInt64() -> UInt64 {
+        UInt64(bitPattern: Int64(mrb_bridge_integer(raw)))
+    }
+
     /// 转为 Swift `Double`。
     public func toDouble() -> Double {
         if isFloat { return Double(mrb_bridge_float(raw)) }
@@ -463,41 +487,60 @@ public struct MRubyValue: @unchecked Sendable {
         }
     }
 
-    // MARK: - 属性定义
+    // MARK: - Property Descriptor Keys
 
-    /// 属性描述符的键，用于 `defineProperty(_:descriptor:)`。
-    ///
-    /// 对应 JSValue 的 Property Descriptor Keys 常量。
-    public struct MRubyPropertyDescriptor: Sendable {
-        /// getter 方法名（若为 nil 则使用属性名）。
-        public var getter: String?
-        /// setter 方法名（若为 nil 则生成 `属性名=`）。
-        public var setter: String?
-        /// 是否为只读（不生成 setter）。
-        public var readonly: Bool
-
-        public init(getter: String? = nil, setter: String? = nil, readonly: Bool = false) {
-            self.getter = getter
-            self.setter = setter
-            self.readonly = readonly
-        }
+    /// Property Descriptor 的键，对应 JSValue 的 Property Descriptor Keys。
+    public struct MRubyPropertyDescriptorKeys {
+        /// 属性是否可赋值（读写）。对应 JSC `JSPropertyDescriptorWritableKey`。
+        public static let writable     = "writable"
+        /// 属性是否可枚举。对应 JSC `JSPropertyDescriptorEnumerableKey`。
+        public static let enumerable   = "enumerable"
+        /// 属性是否可配置（删除/修改描述符）。对应 JSC `JSPropertyDescriptorConfigurableKey`。
+        public static let configurable = "configurable"
+        /// 属性的值。对应 JSC `JSPropertyDescriptorValueKey`。
+        public static let value        = "value"
+        /// getter 函数。对应 JSC `JSPropertyDescriptorGetKey`。
+        public static let get          = "get"
+        /// setter 函数。对应 JSC `JSPropertyDescriptorSetKey`。
+        public static let set          = "set"
     }
 
-    /// 在 JavaScript 对象上定义或修改属性。
+    /// 在 Ruby 对象上定义或修改属性。
     ///
     /// 对应 JSValue 的 `defineProperty(_:descriptor:)`。
-    /// 在 mruby 中通过 Ruby 的 `attr_accessor` / `attr_reader` 实现。
+    /// descriptor 是 `[String: Any]` 字典，支持键：
+    /// - `"writable"`: Bool — 是否可写
+    /// - `"value"`: Any — 属性值
+    /// - `"get"`: String — getter 方法名
+    /// - `"set"`: String — setter 方法名
+    ///
     /// - Parameters:
     ///   - name: 属性名。
-    ///   - descriptor: 属性描述符。
-    public func defineProperty(_ name: String, descriptor: MRubyPropertyDescriptor) {
+    ///   - descriptor: 属性描述符字典。
+    public func defineProperty(_ name: String, descriptor: [String: Any] = [:]) {
         guard isClass || isModule else { return }
 
-        // 通过 class_eval 在类上下文中调用 attr_reader/attr_accessor
-        // （attr_accessor 是私有方法，不能直接通过 call 调用）
-        let methodName = descriptor.readonly ? "attr_reader" : "attr_accessor"
-        let code = "\(methodName) :\(name)"
-        _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
+        if let getter = descriptor["get"] as? String {
+            if let setter = descriptor["set"] as? String {
+                let code = "define_method(:\(name)) { @\(name) }; define_method(:\(setter)) { |v| @\(name) = v }"
+                _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
+            } else {
+                let code = "define_method(:\(name)) { @\(name) }"
+                _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
+            }
+        } else if descriptor["value"] != nil {
+            let writable = descriptor["writable"] as? Bool ?? false
+            if writable {
+                let code = "attr_accessor :\(name)"
+                _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
+            } else {
+                let code = "attr_reader :\(name)"
+                _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
+            }
+        } else {
+            let code = "attr_accessor :\(name)"
+            _ = call(method: "class_eval", arguments: [MRubyValue.from(code, in: context)])
+        }
         mrb.pointee.exc = nil
     }
 
@@ -732,10 +775,45 @@ public struct MRubyValue: @unchecked Sendable {
         }
     }
 
-    // MARK: - 方法调用（对应 JSValue.call / invokeMethod）
+    // MARK: - 作为函数调用（对应 JSValue call(withArguments:))
+
+    /// 将当前值作为函数/Proc 调用。
+    ///
+    /// 对应 JSValue 的 `call(withArguments:)`。
+    /// 与 `call(method:arguments:)` 不同——此方法将值本身视为可调用对象
+    /// （Proc、Method 等），而不是调用其上的某个方法。
+    ///
+    /// ```swift
+    /// let proc = try ctx.eval("Proc.new { |a, b| a + b }")
+    /// let result = proc.call(with: [.from(1, in: ctx), .from(2, in: ctx)])
+    /// // result = 3
+    /// ```
+    /// - Parameter arguments: 传入的参数。
+    /// - Returns: 调用结果；发生异常时返回 `nil` 值。
+    @discardableResult
+    public func call(with arguments: [MRubyValue] = []) -> MRubyValue {
+        let callSym = "call".withCString { mrb_intern_cstr(mrb, $0) }
+        var argv = arguments.map(\.raw)
+        let result: mrb_value
+        if argv.isEmpty {
+            result = mrb_funcall_argv(mrb, raw, callSym, 0, nil)
+        } else {
+            result = argv.withUnsafeMutableBufferPointer { buf in
+                mrb_funcall_argv(mrb, raw, callSym, mrb_int(buf.count), buf.baseAddress)
+            }
+        }
+        if mrb.pointee.exc != nil {
+            mrb.pointee.exc = nil
+            return MRubyValue(raw: mrb_nil_value(), context: context)
+        }
+        return MRubyValue(raw: result, context: context)
+    }
+
+    // MARK: - 方法调用（对应 JSValue invokeMethod(_:withArguments:))
 
     /// 调用 Ruby 方法，返回结果值。
     ///
+    /// 对应 JSValue 的 `invokeMethod(_:withArguments:)`。
     /// 若调用过程中抛出 Ruby 异常，异常会被清除并返回 `nil` 值。
     /// - Parameters:
     ///   - method: 方法名称。
@@ -769,15 +847,24 @@ extension MRubyValue: CustomStringConvertible {
     public var description: String { inspect() }
 }
 
-// MARK: - Equatable & Hashable
-//
-// `toDictionary()` 要求 key 实现 Hashable。
-// 以 inspect() 字符串作为等价和哈希的依据——这对大多数调试和容器用途已经足够。
-// 若需要严格的 Ruby `==` 语义，可改为调用 mrb_funcall(mrb, raw, "==", 1, other.raw)。
+// MARK: - Equatable & isEqual
 
 extension MRubyValue: Equatable {
+    /// 基于 `inspect()` 字符串的相等性比较。
+    ///
+    /// 对应 JSValue 的 `isEqual(to:)`。
+    /// 若需要 Ruby `==` 语义，使用 `isEqualWithTypeCoercion(to:)`。
     public static func == (lhs: MRubyValue, rhs: MRubyValue) -> Bool {
         lhs.inspect() == rhs.inspect()
+    }
+
+    /// 使用 `inspect()` 比较两个值是否相等。
+    ///
+    /// 对应 JSValue 的 `isEqual(to:)` 实例方法。
+    /// - Parameter other: 要比较的值。
+    /// - Returns: 是否相等。
+    public func isEqual(to other: MRubyValue) -> Bool {
+        self == other
     }
 }
 

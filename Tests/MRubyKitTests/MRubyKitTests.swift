@@ -745,11 +745,63 @@ final class TestBridge: MRubyExport, @unchecked Sendable {
     let vm = try MRubyVM()
     let ctx = vm.makeContext()
     let cls = try ctx.defineClass("PropTest")
-    cls.defineProperty("my_attr", descriptor: .init(readonly: false))
-    // 验证实例上有 getter 和 setter
+    cls.defineProperty("my_attr", descriptor: ["writable": true])
     let instance = cls.construct(with: [])
     #expect(instance.responds(to: "my_attr"))
     #expect(instance.responds(to: "my_attr="))
+}
+
+// MARK: - call(with:)
+
+@Test func testCallAsFunction() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let proc = try ctx.eval("Proc.new { |a, b| a + b }")
+    let result = proc.call(with: [MRubyValue.from(1, in: ctx), MRubyValue.from(2, in: ctx)])
+    #expect(result.toInt() == 3)
+}
+
+@Test func testCallAsFunctionNoArgs() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let proc = try ctx.eval("Proc.new { 42 }")
+    let result = proc.call(with: [])
+    #expect(result.toInt() == 42)
+}
+
+// MARK: - toUInt32 / toInt64 / toUInt64
+
+@Test func testToUInt32() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = MRubyValue.from(42, in: ctx)
+    #expect(val.toUInt32() == 42)
+}
+
+@Test func testToInt64() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = MRubyValue.from(99, in: ctx)
+    #expect(val.toInt64() == 99)
+}
+
+@Test func testToUInt64() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let val = MRubyValue.from(77, in: ctx)
+    #expect(val.toUInt64() == 77)
+}
+
+// MARK: - isEqual(to:)
+
+@Test func testIsEqualExplicit() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let a = MRubyValue.from(42, in: ctx)
+    let b = MRubyValue.from(42, in: ctx)
+    let c = MRubyValue.from(100, in: ctx)
+    #expect(a.isEqual(to: b))
+    #expect(!a.isEqual(to: c))
 }
 
 // MARK: - undefined
