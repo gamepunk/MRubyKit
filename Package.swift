@@ -4,6 +4,9 @@ import PackageDescription
 
 let package = Package(
     name: "MRubyKit",
+    platforms: [
+        .macOS(.v14), .iOS(.v17), .tvOS(.v17), .watchOS(.v10), .visionOS(.v1),
+    ],
     products: [
         .library(name: "MRubyKit", targets: ["MRubyKit"]),
     ],

@@ -1,0 +1,472 @@
+# ─────────────────────────────────────────────────────────
+# MRubyKit — XCFramework 构建 Rakefile
+#
+# 基于 mruby 官方 build_config.rb 模式，比 shell 脚本更强大。
+# 自动检测可用 SDK，生成 build config，编译 mruby，打包 XCFramework。
+#
+# 用法:
+#   rake -f scripts/Rakefile MRUBY_SRC=/tmp/mruby-4.0.0
+#   rake -f scripts/Rakefile MRUBY_SRC=/tmp/mruby-4.0.0 PLATFORMS=macos-arm64,ios-arm64
+#   rake -f scripts/Rakefile MRUBY_SRC=/tmp/mruby-4.0.0 GEMS=mruby-json,mruby-yaml
+#   rake -f scripts/Rakefile MRUBY_SRC=/tmp/mruby-4.0.0 download_gems    # 一次性下载 mgem 到 vendor/mgems/
+#   rake -f scripts/Rakefile MRUBY_SRC=/tmp/mruby-4.0.0 clean_gems      # 清除 vendor/mgems/
+#   rake -f scripts/Rakefile MRUBY_SRC=/tmp/mruby-4.0.0 clean
+#
+# 平台:
+#   - 默认仅 macOS（快速开发调试）
+#   - 指定 PLATFORMS=macos-arm64,ios-arm64 构建多平台
+#   - 所有平台: macos-arm64, ios-arm64, ios-arm64-simulator, tvos-arm64,
+#               tvos-arm64-simulator, watchos-arm64, watchos-arm64-simulator,
+#               xros-arm64, xros-arm64-simulator
+#
+# Gem 管理:
+#   - 一次性下载到项目: rake download_gems → mgem 存入 vendor/mgems/
+#   - 编译时自动优先使用本地路径（vendor/mgems/），不会重复克隆
+#   - 临时添加: GEMS=mruby-json,mruby-yaml 环境变量
+#   - 持久配置: 编辑 GEMS_CUSTOM 数组（支持 :mgem/:github/:git/:path）
+# ─────────────────────────────────────────────────────────
+
+require 'fileutils'
+require 'open3'
+
+# ── 配置 ──────────────────────────────────────────────────
+
+MRUBY_SRC   = ENV['MRUBY_SRC'] || abort("用法: rake -f scripts/Rakefile MRUBY_SRC=/path/to/mruby-4.0.0")
+OUTPUT_DIR  = File.expand_path(ENV['OUTPUT_DIR'] || File.join(__dir__, '..', 'build'))
+WORK_DIR    = "#{OUTPUT_DIR}/.mruby_work"
+BUILD_OUT   = "#{WORK_DIR}/mruby_out"
+XCFW_OUT    = "#{OUTPUT_DIR}/MRuby.xcframework"
+VERBOSE     = ENV['VERBOSE'] == '1'
+
+# 系统依赖 include 路径（用于第三方 mgem 需要系统库的情况，如 mruby-pcre-regexp）
+EXTRA_INCLUDE_DIRS = %w[
+  /opt/homebrew/include
+  /usr/local/include
+].select { |d| File.directory?(d) }.freeze
+
+# ── 平台定义 ──────────────────────────────────────────────
+
+PLATFORMS = {
+  'macos-arm64' => {
+    sdk: 'macosx', arch: 'arm64',
+    cc_flags: '-mmacosx-version-min=14.0',
+    ld_flags: '-mmacosx-version-min=14.0',
+    stdlib_io: true,          # macOS 支持 fork/execl
+  },
+  'ios-arm64' => {
+    sdk: 'iphoneos', arch: 'arm64',
+    cc_flags: '-miphoneos-version-min=17.0',
+    ld_flags: '-miphoneos-version-min=17.0',
+  },
+  'ios-arm64-simulator' => {
+    sdk: 'iphonesimulator', arch: 'arm64',
+    cc_flags: '-mios-simulator-version-min=17.0',
+    ld_flags: '-mios-simulator-version-min=17.0',
+  },
+  'tvos-arm64' => {
+    sdk: 'appletvos', arch: 'arm64',
+    cc_flags: '-mtvos-version-min=17.0',
+    ld_flags: '-mtvos-version-min=17.0',
+  },
+  'tvos-arm64-simulator' => {
+    sdk: 'appletvsimulator', arch: 'arm64',
+    cc_flags: '-mtvos-simulator-version-min=17.0',
+    ld_flags: '-mtvos-simulator-version-min=17.0',
+  },
+  'watchos-arm64' => {
+    sdk: 'watchos', arch: 'arm64',
+    cc_flags: '-mwatchos-version-min=10.0',
+    ld_flags: '-mwatchos-version-min=10.0',
+  },
+  'watchos-arm64-simulator' => {
+    sdk: 'watchsimulator', arch: 'arm64',
+    cc_flags: '-mwatchos-simulator-version-min=10.0',
+    ld_flags: '-mwatchos-simulator-version-min=10.0',
+  },
+  'xros-arm64' => {
+    sdk: 'xros', arch: 'arm64',
+    cc_flags: '',
+    ld_flags: '',
+  },
+  'xros-arm64-simulator' => {
+    sdk: 'xrsimulator', arch: 'arm64',
+    cc_flags: '',
+    ld_flags: '',
+  },
+}.freeze
+
+# ── Gem 定义 ──────────────────────────────────────────────
+#
+# 在此定义需要编译到 XCFramework 的第三方 mrbgems。
+# 支持以下引用方式：
+#
+#   # 从 mgem-list 官方注册表引用（推荐——自动解析依赖）
+#   { mgem: 'mruby-json' }
+#   { mgem: 'json' }                 # mruby- 前缀可省略
+#
+#   # 从 GitHub 直接克隆
+#   { github: 'mruby/mruby-json' }
+#
+#   # 从任意 Git URL（可指定分支/提交）
+#   { git: 'https://github.com/mruby/mruby-json.git', branch: 'master' }
+#   { git: 'https://...', checksum_hash: 'sha1' }
+#
+#   # 从已下载到本地的路径
+#   { path: '/path/to/mruby-json' }
+#
+# 在 GEMS_EXTRA 中用符号指定 gem 名称（会自动从 mgem-list 解析）:
+GEMS_EXTRA = (ENV['GEMS'] || '').split(',').map(&:strip).reject(&:empty?)
+# 或者在 GEMS_CUSTOM 中用 Hash 指定完整配置:
+GEMS_CUSTOM = [
+  # ── 已启用（开箱即用，纯 Ruby/C 无外部依赖）──────────────
+  { mgem: 'mruby-json' },                 # JSON 解析/生成（mattn）—— 必备
+  { mgem: 'mruby-digest' },               # MD5/SHA1/SHA256/SHA512/HMAC（IIJ）
+  { mgem: 'mruby-base64' },               # Base64 编解码（mattn）
+  { mgem: 'mruby-time-strftime' },        # Time#strftime 格式化
+  { mgem: 'mruby-logger' },               # 日志记录（Katzer）
+  { mgem: 'mruby-stringio' },             # StringIO 类（ksss）
+  { mgem: 'mruby-singleton' },            # Singleton 模块（ksss）
+
+  # ── 推荐但需系统库 ──────────────────────────────────────
+  { mgem: 'mruby-pcre-regexp' },           # PCRE 正则（需 brew install pcre）
+  # { mgem: 'mruby-shellwords' },         # Shell 风格字符串解析（依赖 mruby-onig-regexp）
+  # { mgem: 'mruby-secure-random' },      # SecureRandom（依赖 mruby-io，不支持 tvOS/watchOS）
+  # { mgem: 'mruby-mtest' },              # 最小测试框架（依赖 mruby-io，不支持 tvOS/watchOS）
+  # { mgem: 'mruby-sqlite3' },            # SQLite3 数据库（需系统库）
+  # { mgem: 'mruby-curl' },              # CURL HTTP 客户端（需 libcurl）
+  # { mgem: 'mruby-zlib' },              # zlib 压缩（需系统库）
+
+  # ── 纯 Ruby（无 C 扩展，直接加载 .rb 文件）──────────────
+  # { mgem: 'mruby-erb' },               # ERB 模板引擎
+  # { mgem: 'mruby-yaml' },              # YAML 解析（纯 Ruby 版）
+  # { mgem: 'mruby-env' },               # ENV 类实现（IIJ）
+  # { mgem: 'mruby-ostruct' },           # OpenStruct 类
+  # { mgem: 'mruby-require' },           # require 加载（与 stdlib-io 有冲突）
+
+  # ── 高级功能（按需启用，注意 C++ 编译兼容性）─────────────
+  # { mgem: 'mruby-uri-parser' },         # URI 解析（含 C++ ada 子模块，需 brew install pcre）
+  # { mgem: 'mruby-cbor' },              # CBOR 二进制序列化
+  # { mgem: 'mruby-msgpack' },           # MessagePack 序列化
+  # { mgem: 'mruby-lz4' },               # LZ4 快速压缩
+  # { mgem: 'mruby-weakref' },           # 弱引用支持
+  # { mgem: 'mruby-http' },              # HTTP 解析器
+  # { mgem: 'mruby-simplehttp' },        # 简单 HTTP 客户端
+  # { mgem: 'mruby-simplehttpserver' },  # 简单 HTTP 服务器
+].freeze
+
+# ── 辅助方法 ──────────────────────────────────────────────
+
+# 只构建指定平台（逗号分隔），默认仅 macOS（跨平台 C++ 编译有不兼容问题）
+PLATFORM_FILTER = (ENV['PLATFORMS'] || 'macos-arm64').split(',').map(&:strip).reject(&:empty?)
+
+def sdk_available?(sdk)
+  system("xcrun --sdk #{sdk} --show-sdk-path > /dev/null 2>&1")
+end
+
+# ── Gem 下载 ──────────────────────────────────────────────
+
+# mgem 仓库存储位置（项目级，编译清理不影响）
+REPOS_DIR = File.expand_path(File.join(__dir__, '..', 'vendor', 'mgems'))
+
+def each_gem_definition
+  GEMS_EXTRA.each { |name| yield({ mgem: name }) }
+  GEMS_CUSTOM.each { |g| yield(g) }
+end
+
+def gem_local_path(name)
+  # 计算 mgem 在 vendor/mgems/ 中的本地路径
+  # 先尝试完整名称，再尝试去掉 mruby- 前缀
+  candidate = "#{REPOS_DIR}/#{name}"
+  return candidate if Dir.exist?(candidate)
+  clean = name.delete_prefix('mruby-')
+  candidate = "#{REPOS_DIR}/#{clean}"
+  return candidate if Dir.exist?(candidate) && clean != name
+  nil
+end
+
+def gem_config_lines
+  lines = []
+  each_gem_definition do |g|
+    if g.key?(:mgem)
+      name = g[:mgem]
+      local = gem_local_path(name)
+      if local
+        # 本地已下载，使用路径引用（不重复克隆）
+        lines << "  conf.gem :gemdir => #{local.inspect}"
+      else
+        # 本地没有，走 mgem-list 解析（自动克隆）
+        lines << "  conf.gem :mgem => #{name.inspect}"
+      end
+    elsif g.key?(:github)
+      opts = "github: #{g[:github].inspect}"
+      opts += ", branch: #{g[:branch].inspect}" if g[:branch]
+      lines << "  conf.gem #{opts}"
+    elsif g.key?(:git)
+      opts = "git: #{g[:git].inspect}"
+      opts += ", branch: #{g[:branch].inspect}" if g[:branch]
+      opts += ", checksum_hash: #{g[:checksum_hash].inspect}" if g[:checksum_hash]
+      lines << "  conf.gem #{opts}"
+    elsif g.key?(:path)
+      lines << "  conf.gem #{g[:path].inspect}"
+    end
+  end
+  lines
+end
+
+desc "预下载所有第三方 mgem（编译前执行）"
+task :download_gems do
+  require 'yaml'
+
+  # 收集所有需要预下载的 gem 定义
+  gems = []
+  GEMS_EXTRA.each { |name| gems << { mgem: name } }
+  gems += GEMS_CUSTOM
+
+  if gems.empty?
+    puts "没有需要下载的第三方 mgem（通过 GEMS= 环境变量指定，或编辑 GEMS_CUSTOM）"
+    return
+  end
+
+  puts "==> 预下载 #{gems.size} 个 mgem..."
+  puts ""
+
+  FileUtils.mkdir_p(REPOS_DIR)
+
+  gems.each do |g|
+    if g.key?(:mgem)
+      # 从 mgem-list 解析仓库 URL
+      download_via_mgem_list(g[:mgem], REPOS_DIR)
+    elsif g.key?(:github)
+      url = "https://github.com/#{g[:github]}.git"
+      git_clone_or_update(url, File.basename(g[:github]), REPOS_DIR, g[:branch])
+    elsif g.key?(:git)
+      name = g[:git].match(/([-\w]+)(\.[-\w]+|)$/)[1] || 'gem'
+      git_clone_or_update(g[:git], name, REPOS_DIR, g[:branch])
+    elsif g.key?(:path)
+      puts "   ○ #{g[:path]}  (本地路径，无需下载)"
+    end
+  end
+
+  puts ""
+  puts "✅ 全部 mgem 已下载到: #{REPOS_DIR}"
+  puts "   运行 rake compile 即可编译到 XCFramework"
+end
+
+def download_via_mgem_list(name, target_dir)
+  require 'yaml'
+
+  # 克隆/更新 mgem-list 注册表
+  list_dir = "#{REPOS_DIR}/mgem-list"
+  unless Dir.exist?(list_dir)
+    puts "   克隆 mgem-list..."
+    system "git", "clone", "--depth=1", "https://github.com/mruby/mgem-list.git", list_dir
+  end
+
+  # 查找 .gem 文件
+  clean = name.delete_prefix('mruby-')
+  gem_file = "#{list_dir}/#{name}.gem"
+  gem_file = "#{list_dir}/#{clean}.gem" unless File.exist?(gem_file)
+  gem_file = "#{list_dir}/mruby-#{clean}.gem" unless File.exist?(gem_file)
+
+  unless File.exist?(gem_file)
+    puts "   ? #{name}: 未在 mgem-list 中找到，尝试直接克隆 mruby/#{name}"
+    git_clone_or_update("https://github.com/mruby/#{name}.git", name, target_dir, nil)
+    return
+  end
+
+  conf = YAML.load(File.read(gem_file))
+  url = conf['repository']
+  branch = conf['branch']
+
+  unless url
+    puts "   ✗ #{name}: .gem 文件中缺少 repository 字段"
+    return
+  end
+
+  puts "   → #{name}: #{url} (#{branch || 'default branch'})"
+  git_clone_or_update(url, name, target_dir, branch)
+end
+
+def git_clone_or_update(url, dir_name, target_dir, branch = nil)
+  dest = "#{target_dir}/#{dir_name}"
+  if Dir.exist?(dest)
+    puts "   ✓ #{dir_name}: 已下载"
+  else
+    args = ["git", "clone", "--depth=1"]
+    args += ["--branch", branch] if branch
+    args += [url, dest]
+    system(*args)
+  end
+end
+
+desc "清理已下载的 mgem 仓库"
+task :clean_gems do
+  FileUtils.rm_rf(REPOS_DIR)
+  puts "已清理 #{REPOS_DIR}"
+end
+
+def generate_build_config(platforms)
+  config_lines = []
+
+  platforms.each do |id, cfg|
+    sdk_path = `xcrun --sdk #{cfg[:sdk]} --show-sdk-path`.strip
+    cc       = `xcrun --sdk #{cfg[:sdk]} --find clang`.strip
+    ar       = `xcrun --sdk #{cfg[:sdk]} --find ar`.strip
+
+    config_lines << "MRuby::CrossBuild.new(#{id.inspect}) do |conf|"
+    config_lines << "  conf.toolchain"
+    config_lines << "  conf.cc do |cc|"
+    config_lines << "    cc.command = #{cc.inspect}"
+    config_lines << "    cc.flags   = %w[-arch #{cfg[:arch]} -Os -fno-exceptions #{cfg[:cc_flags]}]"
+    config_lines << "    cc.flags  << '-isysroot' << #{sdk_path.inspect}"
+    EXTRA_INCLUDE_DIRS.each do |inc|
+      config_lines << "    cc.flags  << '-I' << #{inc.inspect}"
+    end
+    config_lines << "  end"
+    config_lines << "  conf.linker do |l|"
+    config_lines << "    l.command = #{cc.inspect}"
+    config_lines << "    l.flags   = %w[-arch #{cfg[:arch]} #{cfg[:ld_flags]}]"
+    config_lines << "    l.flags  << '-isysroot' << #{sdk_path.inspect}"
+    config_lines << "  end"
+    config_lines << "  conf.archiver do |ar|"
+    config_lines << "    ar.command = #{ar.inspect}"
+    config_lines << "    ar.archive_options = 'rcs \"%{outfile}\" %{objs}'"
+    config_lines << "  end"
+    config_lines << "  conf.bins = []"
+    config_lines << "  conf.gembox 'stdlib'"
+    config_lines << "  conf.gembox 'stdlib-ext'"
+    config_lines << "  conf.gembox 'math'"
+    config_lines << "  conf.gembox 'metaprog'"
+    config_lines << "  conf.gem :core => 'mruby-compiler'"
+
+    # stdlib-io（mruby-io/socket/dir）仅 macOS 可用
+    if cfg[:stdlib_io]
+      config_lines << "  conf.gembox 'stdlib-io'"
+    end
+
+    # 第三方 mgem（来自 GEMS_EXTRA 和 GEMS_CUSTOM）
+    config_lines += gem_config_lines.map { |l| "  #{l}" }
+
+    config_lines << "end"
+    config_lines << ""
+  end
+
+  config_lines.join("\n")
+end
+
+# ── 任务 ──────────────────────────────────────────────────
+
+desc "编译可用平台并打包 XCFramework（默认）"
+task :default => :xcframework
+
+desc "生成 build config 并编译 mruby"
+task :compile do
+  FileUtils.mkdir_p("#{WORK_DIR}/mruby_out")
+
+  all_available = PLATFORMS.select { |_id, cfg| sdk_available?(cfg[:sdk]) }
+  available = all_available.select { |id, _| PLATFORM_FILTER.include?(id) }
+
+  if available.empty?
+    # 如果过滤后为空，回退到可用平台
+    available = all_available
+  end
+
+  if available.empty?
+    abort "✗ 未检测到可用 SDK"
+  end
+
+  puts "==> 可用平台: #{available.keys.join(', ')}"
+  gem_list = GEMS_EXTRA.dup
+  gem_list += GEMS_CUSTOM.map { |g| g[:mgem] || g[:github] || g[:git] || g[:path] }
+  puts "==> 第三方 mgem: #{gem_list.join(', ')}" unless gem_list.empty?
+  puts ""
+
+  # 生成 build config
+  config = generate_build_config(available)
+  config_path = "#{WORK_DIR}/build_config.rb"
+  File.write(config_path, config)
+  puts "==> build config 已写入: #{config_path}"
+
+  # 运行 mruby 的 Rakefile 编译
+  env = {
+    'MRUBY_BUILD_DIR' => BUILD_OUT,
+    'MRUBY_CONFIG'    => config_path,
+  }
+  cmd = "rake -f \"#{MRUBY_SRC}/Rakefile\""
+  puts "==> 开始编译..."
+  success = system(env, cmd)
+
+  unless success
+    abort "✗ 编译失败，请检查错误输出"
+  end
+end
+
+desc "将编译产物打包为 XCFramework"
+task :xcframework => :compile do
+  lib_args = []
+
+  # 使用与 compile 相同的平台过滤
+  all_available = PLATFORMS.select { |_id, cfg| sdk_available?(cfg[:sdk]) }
+  platforms = all_available.select { |id, _| PLATFORM_FILTER.include?(id) }
+  platforms = all_available if platforms.empty?
+
+  platforms.each do |id, _cfg|
+    lib = Dir["#{BUILD_OUT}/#{id}/lib/libmruby.a"].first
+    next puts "  !! #{id}: 未找到 libmruby.a" unless lib
+
+    # 整理头文件
+    staged_inc = "#{WORK_DIR}/staged/#{id}/include"
+    FileUtils.mkdir_p(staged_inc)
+
+    FileUtils.cp_r Dir["#{MRUBY_SRC}/include/."], staged_inc
+
+    build_inc = "#{BUILD_OUT}/#{id}/include"
+    FileUtils.cp_r Dir["#{build_inc}/."], staged_inc if Dir.exist?(build_inc)
+
+    File.write("#{staged_inc}/module.modulemap", <<~MAP)
+      module MRuby {
+        header "mruby.h"
+        header "mruby/compile.h"
+        header "mruby/string.h"
+        header "mruby/array.h"
+        header "mruby/hash.h"
+        header "mruby/value.h"
+        header "mruby/variable.h"
+        header "mruby/class.h"
+        header "mruby/error.h"
+        header "mruby/numeric.h"
+        header "mruby/object.h"
+        header "mruby/proc.h"
+        header "mruby/range.h"
+        header "mruby/data.h"
+        header "mruby/gc.h"
+        header "mruby/presym.h"
+        export *
+      }
+    MAP
+
+    size_kb = File.size(lib) / 1024
+    puts "  ✓ #{id}  (#{size_kb} KB)"
+
+    lib_args << "-library" << lib << "-headers" << staged_inc
+  end
+
+  if lib_args.empty?
+    abort "✗ 没有可打包的编译产物"
+  end
+
+  FileUtils.rm_rf(XCFW_OUT)
+  system "xcodebuild", "-create-xcframework", *lib_args, "-output", XCFW_OUT
+
+  total_mb = Dir["#{XCFW_OUT}/**/*.a"].sum { |f| File.size(f) } / 1024 / 1024
+  puts ""
+  puts "✅ #{XCFW_OUT}"
+  puts "   总大小: #{total_mb} MB"
+end
+
+desc "清理构建产物"
+task :clean do
+  FileUtils.rm_rf(WORK_DIR)
+  FileUtils.rm_rf(XCFW_OUT)
+  puts "已清理"
+end
