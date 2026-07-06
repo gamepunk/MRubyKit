@@ -421,56 +421,57 @@ import Testing
 
 // MARK: - MRubyRelationCondition
 
-@Test func testManagedValueWithConditionUndefined() async throws {
+@Test func testRelationEqual() async throws {
     let vm = try MRubyVM()
     let ctx = vm.makeContext()
-    let val = try ctx.eval("\"hello\"")
-    // undefined 等同于 objectRequired
-    let managed = MRubyManagedValue(value: val, owner: nil, condition: .undefined)
-    #expect(managed.rubyValue.toString() == "hello")
-    managed.dispose()
+    let a = MRubyValue.from(42, in: ctx)
+    let b = MRubyValue.from(42, in: ctx)
+    #expect(a.relation(to: b) == .equal)
 }
 
-@Test func testManagedValueWithConditionObjectRequired() async throws {
+@Test func testRelationLessThan() async throws {
     let vm = try MRubyVM()
     let ctx = vm.makeContext()
-    let val = try ctx.eval("\"hello\"")
-
-    class Owner {}
-    let owner = Owner()
-    let managed = MRubyManagedValue(value: val, owner: owner, condition: .objectRequired)
-    #expect(managed.rubyValue.toString() == "hello")
+    let a = MRubyValue.from(1, in: ctx)
+    let b = MRubyValue.from(100, in: ctx)
+    #expect(a.relation(to: b) == .lessThan)
+    #expect(b.relation(to: a) == .greaterThan)
 }
 
-@Test func testManagedValueWithConditionObjectNotRequired() async throws {
+@Test func testRelationString() async throws {
     let vm = try MRubyVM()
     let ctx = vm.makeContext()
-    let val = try ctx.eval("\"hello\"")
-    // objectNotRequired 不会调用 mrb_gc_register
-    // 值仍可正常访问（因为栈上还有引用）
-    let managed = MRubyManagedValue(value: val, owner: nil, condition: .objectNotRequired)
-    #expect(managed.rubyValue.toString() == "hello")
+    let a = MRubyValue.from("apple", in: ctx)
+    let b = MRubyValue.from("banana", in: ctx)
+    #expect(a.relation(to: b) == .lessThan)
+    #expect(b.relation(to: a) == .greaterThan)
+    #expect(a.relation(to: a) == .equal)
 }
 
-@Test func testVMRetainWithCondition() async throws {
+@Test func testRelationUndefined() async throws {
     let vm = try MRubyVM()
     let ctx = vm.makeContext()
-    let val = try ctx.eval("\"test\"")
+    // 不同类型不可比较
+    let a = MRubyValue.from(42, in: ctx)
+    let b = MRubyValue.from("hello", in: ctx)
+    #expect(a.relation(to: b) == .undefined)
+}
 
-    // objectRequired: 注册到 GC 根
-    vm.retain(val, condition: .objectRequired)
-    vm.release(val, condition: .objectRequired)
-    #expect(Bool(true))
+@Test func testRelationFloat() async throws {
+    let vm = try MRubyVM()
+    let ctx = vm.makeContext()
+    let a = MRubyValue.from(3.14, in: ctx)
+    let b = MRubyValue.from(2.71, in: ctx)
+    #expect(a.relation(to: b) == .greaterThan)
+    #expect(b.relation(to: a) == .lessThan)
+}
 
-    // objectNotRequired: 不注册（No-op，不会崩溃）
-    vm.retain(val, condition: .objectNotRequired)
-    vm.release(val, condition: .objectNotRequired)
-    #expect(Bool(true))
-
-    // undefined: 等同于 objectRequired
-    vm.retain(val, condition: .undefined)
-    vm.release(val, condition: .undefined)
-    #expect(Bool(true))
+@Test func testRelationRawValue() async throws {
+    // 验证原始值和构造器
+    #expect(MRubyRelationCondition(rawValue: 0) == .equal)
+    #expect(MRubyRelationCondition(rawValue: 1) == .greaterThan)
+    #expect(MRubyRelationCondition(rawValue: 2) == .lessThan)
+    #expect(MRubyRelationCondition(rawValue: 3) == .undefined)
 }
 
 // MARK: - MRubyExport

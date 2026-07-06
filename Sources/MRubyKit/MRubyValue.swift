@@ -1,6 +1,46 @@
 import Foundation
 import CMRuby
 
+// MARK: - MRubyRelationCondition
+
+/// 两个 mruby 值之间的比较关系。
+///
+/// 对应 JavaScriptCore 的 `JSRelationCondition`。
+/// 通过 Ruby 的 `<=>`（spaceship）运算符实现三路比较。
+///
+/// ```swift
+/// let rel = value1.relation(to: value2)
+/// switch rel {
+/// case .equal:        // value1 == value2
+/// case .greaterThan:  // value1 > value2
+/// case .lessThan:     // value1 < value2
+/// case .undefined:    // 不可比较（类型不同等）
+/// }
+/// ```
+public enum MRubyRelationCondition: UInt32, Sendable {
+    /// 两个值相等（Ruby `<=>` 返回 0）。
+    case equal       = 0
+    /// 左值大于右值（Ruby `<=>` 返回 1）。
+    case greaterThan = 1
+    /// 左值小于右值（Ruby `<=>` 返回 -1）。
+    case lessThan    = 2
+    /// 无法比较（Ruby `<=>` 返回 `nil`，例如不同类型）。
+    case undefined   = 3
+
+    /// 从 Ruby `<=>` 的返回值创建。
+    /// - Parameter spaceshipResult: Ruby `<=>` 的返回值（Integer 或 nil）。
+    init(spaceshipValue: MRubyValue) {
+        if spaceshipValue.isNil {
+            self = .undefined
+        } else {
+            let val = spaceshipValue.toInt()
+            if val < 0 { self = .lessThan }
+            else if val > 0 { self = .greaterThan }
+            else { self = .equal }
+        }
+    }
+}
+
 /// 对 mruby 值的引用。
 ///
 /// 对应 JavaScriptCore 的 `JSValue`。
@@ -181,6 +221,33 @@ public struct MRubyValue: @unchecked Sendable {
     public func responds(to selector: String) -> Bool {
         let sym = selector.withCString { mrb_intern_cstr(mrb, $0) }
         return mrb_bridge_respond_to(mrb, raw, sym)
+    }
+
+    /// 比较当前值与另一个值的关系（Ruby `<=>` 运算符）。
+    ///
+    /// 对应 JavaScriptCore 中 `JSValue` 的比较方法，返回 `MRubyRelationCondition`。
+    ///
+    /// ```swift
+    /// let a = MRubyValue.from(42, in: ctx)
+    /// let b = MRubyValue.from(100, in: ctx)
+    /// a.relation(to: b)  // .lessThan
+    /// b.relation(to: a)  // .greaterThan
+    /// a.relation(to: a)  // .equal
+    /// ```
+    /// - Parameter other: 要比较的另一个值。
+    /// - Returns: 比较结果。若值不可比较（例如不同类型），返回 `.undefined`。
+    public func relation(to other: MRubyValue) -> MRubyRelationCondition {
+        let spaceship = "<=>".withCString { mrb_intern_cstr(mrb, $0) }
+        var argv = [other.raw]
+        let result = argv.withUnsafeMutableBufferPointer { buf in
+            mrb_funcall_argv(mrb, raw, spaceship, mrb_int(buf.count), buf.baseAddress)
+        }
+        if mrb.pointee.exc != nil {
+            mrb.pointee.exc = nil
+            return .undefined
+        }
+        let resultVal = MRubyValue(raw: result, context: context)
+        return MRubyRelationCondition(spaceshipValue: resultVal)
     }
 
     // MARK: - 构造调用（对应 JSValue 的 constructWithArguments:）

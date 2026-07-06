@@ -1,23 +1,5 @@
 import Foundation
 
-// MARK: - MRubyRelationCondition
-
-/// managed reference 的条件，控制关联值的 GC 保护策略。
-///
-/// 对应 JavaScriptCore 的 `JSRelationCondition`。
-/// 当通过 `MRubyManagedValue` 或 `MRubyVM` 的 managed reference 方法管理
-/// Ruby 值的生命周期时，此枚举决定该值在何种条件下被 GC 保护。
-public enum MRubyRelationCondition: Sendable {
-    /// 未指定条件，使用默认行为（等价于 `objectRequired`）。
-    case undefined
-    /// 要求对象存活——只要 owner 存活，值就不会被 GC 回收。
-    /// 对应 `mrb_gc_register`。
-    case objectRequired
-    /// 不要求对象存活——值不注册到 GC 根集合，由正常的 GC mark 机制管理。
-    /// 仅当值可从其他 GC root 到达时才存活。
-    case objectNotRequired
-}
-
 // MARK: - MRubyManagedValue
 
 /// 管理 mruby 值的生命周期，对应 JavaScriptCore 的 `JSManagedValue`。
@@ -53,21 +35,20 @@ public final class MRubyManagedValue: @unchecked Sendable {
     /// owner 对象（若有）。当 owner 被释放时，关联的 `MRubyValue` 也会被释放。
     private weak var owner: AnyObject?
 
-    /// 保护条件。
-    private let condition: MRubyRelationCondition
-
     /// 是否通过 `mrb_gc_register` 保护了该值。
-    private var isProtected: Bool = false
+    private var isProtected: Bool = true
 
     // MARK: - 创建
 
-    /// 创建一个托管值，归入指定 VM 的保护（无 owner）。
+    /// 创建一个托管值，归入指定 VM 的保护。
     ///
-    /// 默认条件为 `objectRequired`——值会被 `mrb_gc_register` 保护，
-    /// 直到 `MRubyManagedValue` 本身被释放。
+    /// 值会被 `mrb_gc_register` 保护，直到 `MRubyManagedValue` 被释放。
     /// - Parameter value: 需要托管的 Ruby 值。
-    public convenience init(value: MRubyValue) {
-        self.init(value: value, owner: nil, condition: .objectRequired)
+    public init(value: MRubyValue) {
+        self.rubyValue = value
+        self.virtualMachine = value.context.virtualMachine
+        self.owner = nil
+        virtualMachine.retain(value)
     }
 
     /// 创建一个与 owner 生命周期绑定的托管值。
@@ -77,27 +58,11 @@ public final class MRubyManagedValue: @unchecked Sendable {
     /// - Parameters:
     ///   - value: 需要托管的 Ruby 值。
     ///   - owner: 拥有该值的 Swift 对象。使用 `weak` 引用，不会延长其生命周期。
-    public convenience init(value: MRubyValue, owner: AnyObject) {
-        self.init(value: value, owner: owner, condition: .objectRequired)
-    }
-
-    /// 创建托管值，并指定保护条件。
-    ///
-    /// - Parameters:
-    ///   - value: 需要托管的 Ruby 值。
-    ///   - owner: 拥有该值的 Swift 对象（可为 `nil`）。
-    ///   - condition: 保护条件，默认 `.objectRequired`。
-    public init(value: MRubyValue, owner: AnyObject?, condition: MRubyRelationCondition) {
+    public init(value: MRubyValue, owner: AnyObject) {
         self.rubyValue = value
         self.virtualMachine = value.context.virtualMachine
         self.owner = owner
-        self.condition = condition
-
-        // 仅当 objectRequired 时注册到 GC 根集合
-        if condition == .objectRequired || condition == .undefined {
-            virtualMachine.retain(value)
-            isProtected = true
-        }
+        virtualMachine.retain(value)
     }
 
     deinit {
